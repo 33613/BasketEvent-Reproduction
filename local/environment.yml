@@ -1,0 +1,14 @@
+name: sam3
+channels:
+  - defaults
+dependencies:
+  - python=3.12.11
+  - pip=25.2
+  - setuptools=78.1.1
+  - wheel=0.45.1
+  - ffmpeg
+
+# 在仓库根目录运行：conda env create -f local/environment.yml
+# 创建环境后执行：
+# python -m pip install -r local/requirements-lock.txt
+# python -m pip install -e ".\sam3[notebooks,train,dev]"

@@ -315,7 +315,7 @@ def main() -> None:
         fmt=args.traj_format,
     )
 
-    device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     num_classes = len(LABEL_MAP)
     model = PlayerEventModel(
         num_classes=num_classes,

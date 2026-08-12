@@ -2,8 +2,8 @@ import os
 import json
 import argparse
 import numpy as np
-from sam3.sam3.model_builder import build_sam3_video_predictor
-from sam3.sam3.visualization_utils import prepare_masks_for_visualization
+from sam3.model_builder import build_sam3_video_predictor
+from sam3.visualization_utils import prepare_masks_for_visualization
 import pandas as pd
 import torch
 import gc
@@ -162,7 +162,7 @@ def parse_args():
     parser.add_argument(
         "--gpus_to_use",
         type=str,
-        default="6",
+        default="0",
         help="GPU ids, e.g. '0' or '0,1,2'",
     )
     return parser.parse_args()
@@ -174,7 +174,21 @@ def main():
     video_path = args.video_path
     json_save_path = args.json_save_path
 
-    predictor = build_sam3_video_predictor(gpus_to_use=gpus_to_use)
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    sam3_checkpoint = os.path.join(project_root, "checkpoints", "sam3", "sam3.pt")
+    sam3_bpe = os.path.join(
+        project_root, "sam3", "sam3", "assets", "bpe_simple_vocab_16e6.txt.gz"
+    )
+    if not os.path.isfile(sam3_checkpoint):
+        raise FileNotFoundError(f"SAM3 checkpoint not found: {sam3_checkpoint}")
+    if not os.path.isfile(sam3_bpe):
+        raise FileNotFoundError(f"SAM3 BPE vocabulary not found: {sam3_bpe}")
+
+    predictor = build_sam3_video_predictor(
+        checkpoint_path=sam3_checkpoint,
+        bpe_path=sam3_bpe,
+        gpus_to_use=gpus_to_use,
+    )
 
     if not os.path.exists(video_path):
         print(f"[ERROR] video not found, skip: {video_path}")

@@ -652,7 +652,7 @@ def parse_args():
     parser.add_argument(
         "--gpus_to_use",
         type=str,
-        default="6",
+        default="0",
         help="GPU ids, e.g. '0' or '0,1,2'",
     )
     return parser.parse_args()
@@ -666,10 +666,23 @@ def main():
     ROSTER_JSON = args.roster_json
     gpus_to_use = args.gpus_to_use
     device = f"cuda:{gpus_to_use.split(',')[0]}" if torch.cuda.is_available() else "cpu"
+    from transformers import BitsAndBytesConfig
+
+    model_path = "Qwen2.5-VL-7B-Instruct"
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        "Qwen2.5-VL-7B-Instruct", torch_dtype="auto"
-    ).to(device)
-    processor = AutoProcessor.from_pretrained("Qwen2.5-VL-7B-Instruct")
+        model_path,
+        quantization_config=quantization_config,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+    )
+    processor = AutoProcessor.from_pretrained(model_path)
 
     results = rec_one_video(model, processor, video_path, bbox_json_path, ROSTER_JSON, device=device)
     # print(results)

@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import roi_align
 from typing import Optional, Dict, Any, Tuple, List
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TIMESFORMER_PATH = PROJECT_ROOT / "checkpoints" / "timesformer-base-finetuned-k400"
 
 
 # =========================================================
@@ -796,7 +801,7 @@ class PlayerEventModel(nn.Module):
     def __init__(
         self,
         num_classes: int,
-        pretrained_name: str = "/GPFS/rhome/yuzhang/.cache/huggingface/hub/models--facebook--timesformer-base-finetuned-k400/snapshots/f300f6ac53f51b74e7f691877142ac426ce800ad",
+        pretrained_name: str = str(DEFAULT_TIMESFORMER_PATH),
         roi_out_size: Tuple[int, int] = (1, 1),
         roi_out_dim: Optional[int] = None,
         image_size: int = 224,

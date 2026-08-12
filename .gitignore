@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local model weights (large files downloaded separately)
+Qwen2.5-VL-7B-Instruct/
+checkpoints/

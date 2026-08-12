@@ -17,6 +17,7 @@ conda env create -f local/environment.yml
 conda activate sam3
 $env:PYTHONNOUSERSITE = "1"
 python -m pip install -r local/requirements-lock.txt
+git -C sam3 apply ../local/patches/sam3-windows-openmp.patch
 python -m pip install -e ".\sam3[notebooks,train,dev]"
 ```
 
@@ -33,5 +34,7 @@ Qwen2.5-VL-7B-Instruct/
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\local\verify_environment.ps1
 ```
+
+`local/patches/sam3-windows-openmp.patch` 保存了子模块内的 Windows OpenMP 修复，因为父仓库不能直接记录子模块未提交的文件变化。重复应用前可运行 `git -C sam3 apply --check ../local/patches/sam3-windows-openmp.patch`。
 
 注意：`requirements-lock.txt` 固定的是本次成功环境的关键运行依赖，而不是所有 Jupyter/开发工具的传递依赖。安装结束后必须运行 `pip check` 和验收脚本。

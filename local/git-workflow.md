@@ -25,13 +25,15 @@ git remote rename origin upstream
 git remote add origin https://github.com/<your-name>/<your-repo>.git
 git remote -v
 git switch -c repro/windows-rtx5060
-git add .gitignore local track_one_video.py recognize.py inference.py src/model.py sam3
+git add .gitignore local track_one_video.py recognize.py inference.py src/model.py
 git status
 git commit -m "Document and adapt local Windows reproduction"
 git push -u origin repro/windows-rtx5060
 ```
 
 Do not run `git add .` until `git status` has been reviewed. The model directories are ignored, but datasets, logs and generated outputs should also be reviewed before committing.
+
+`sam3` 是Git子模块。`git add sam3` 只能记录子模块指向的commit，不能保存其内部未提交修改。本项目将Windows OpenMP修复保存为 `local/patches/sam3-windows-openmp.patch`，新环境克隆后按 `local/README.md` 应用。
 
 ## Daily workflow
 

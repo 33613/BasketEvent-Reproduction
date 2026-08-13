@@ -3,7 +3,6 @@ import json
 import argparse
 import numpy as np
 from sam3.model_builder import build_sam3_video_predictor
-from sam3.visualization_utils import prepare_masks_for_visualization
 import pandas as pd
 import torch
 import gc
@@ -77,12 +76,9 @@ def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=No
 
         for frame_idx in range(num_frames):
             frame_dict = get_frame_dict(player_outputs, frame_idx)
-            mask = frame_dict.get(raw_pid, None)
-
-            if mask is None:
-                mask = frame_dict.get(str(raw_pid), None)
-
-            bbox = mask_to_bbox(mask) if mask is not None else None
+            bbox = frame_dict.get(raw_pid, None)
+            if bbox is None:
+                bbox = frame_dict.get(str(raw_pid), None)
             trajectory.append(bbox)
 
         result[object_name] = {
@@ -97,12 +93,9 @@ def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=No
 
         for frame_idx in range(num_frames):
             frame_dict = get_frame_dict(ball_outputs, frame_idx)
-            mask = frame_dict.get(raw_bid, None)
-
-            if mask is None:
-                mask = frame_dict.get(str(raw_bid), None)
-
-            bbox = mask_to_bbox(mask) if mask is not None else None
+            bbox = frame_dict.get(raw_bid, None)
+            if bbox is None:
+                bbox = frame_dict.get(str(raw_bid), None)
             trajectory.append(bbox)
 
         result[object_name] = {
@@ -113,15 +106,52 @@ def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=No
         json.dump(result, f, ensure_ascii=False, indent=2)
 
 
-def propagate_in_video(predictor, session_id):
+def _normalized_xywh_to_pixels(box, frame_width, frame_height):
+    """Convert SAM3 normalized xywh output to integer pixel xywh."""
+    x, y, w, h = map(float, box)
+    x1 = max(0, min(frame_width, int(round(x * frame_width))))
+    y1 = max(0, min(frame_height, int(round(y * frame_height))))
+    x2 = max(0, min(frame_width, int(round((x + w) * frame_width))))
+    y2 = max(0, min(frame_height, int(round((y + h) * frame_height))))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def propagate_in_video(
+    predictor, session_id, frame_width, frame_height, max_frames=None
+):
+    """Stream SAM3 outputs and retain only compact boxes, never full masks."""
     outputs_per_frame = {}
     for response in predictor.handle_stream_request(
-        request=dict(type="propagate_in_video", session_id=session_id)
+        request=dict(
+            type="propagate_in_video",
+            session_id=session_id,
+            propagation_direction="forward",
+            start_frame_index=0,
+            # SAM3 treats this value as the distance from the start frame and
+            # includes both endpoints, so N requested frames means distance N-1.
+            max_frame_num_to_track=(max_frames - 1) if max_frames else None,
+        )
     ):
-        outputs_per_frame[response["frame_index"]] = response["outputs"]
+        outputs = response["outputs"]
+        frame_boxes = {}
+        for obj_id, box in zip(outputs["out_obj_ids"], outputs["out_boxes_xywh"]):
+            bbox = _normalized_xywh_to_pixels(box, frame_width, frame_height)
+            if bbox is not None:
+                frame_boxes[int(obj_id)] = bbox
+        outputs_per_frame[int(response["frame_index"])] = frame_boxes
     return outputs_per_frame
 
-def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
+def run_text_prompt(
+    predictor,
+    session_id,
+    prompt_text,
+    frame_width,
+    frame_height,
+    frame_index=0,
+    max_frames=None,
+):
     predictor.handle_request(
         request=dict(
             type="reset_session",
@@ -138,8 +168,13 @@ def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
         )
     )
 
-    outputs_per_frame = propagate_in_video(predictor, session_id)
-    outputs_per_frame = prepare_masks_for_visualization(outputs_per_frame)
+    outputs_per_frame = propagate_in_video(
+        predictor,
+        session_id,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        max_frames=max_frames,
+    )
 
     return outputs_per_frame
 
@@ -165,6 +200,12 @@ def parse_args():
         default="0",
         help="GPU ids, e.g. '0' or '0,1,2'",
     )
+    parser.add_argument(
+        "--max_frames",
+        type=int,
+        default=0,
+        help="Process only the first N frames for a smoke test; 0 means all frames",
+    )
     return parser.parse_args()
 
 
@@ -173,6 +214,7 @@ def main():
     gpus_to_use = [int(x) for x in args.gpus_to_use.split(",")]
     video_path = args.video_path
     json_save_path = args.json_save_path
+    max_frames = args.max_frames if args.max_frames > 0 else None
 
     project_root = os.path.dirname(os.path.abspath(__file__))
     sam3_checkpoint = os.path.join(project_root, "checkpoints", "sam3", "sam3.pt")
@@ -194,10 +236,30 @@ def main():
         print(f"[ERROR] video not found, skip: {video_path}")
         return
 
+    import cv2
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    if frame_width <= 0 or frame_height <= 0 or num_frames <= 0:
+        raise RuntimeError(
+            f"Invalid video metadata: width={frame_width}, height={frame_height}, "
+            f"frames={num_frames}"
+        )
+
     session_id = None
     try:
         response = predictor.handle_request(
-            request=dict(type="start_session", resource_path=video_path)
+            request=dict(
+                type="start_session",
+                resource_path=video_path,
+                offload_video_to_cpu=True,
+                offload_state_to_cpu=False,
+            )
         )
         session_id = response["session_id"]
 
@@ -205,20 +267,27 @@ def main():
             predictor,
             session_id,
             prompt_text="basketball player on the court",
+            frame_width=frame_width,
+            frame_height=frame_height,
             frame_index=0,
+            max_frames=max_frames,
         )
 
         ball_outputs = run_text_prompt(
             predictor,
             session_id,
             prompt_text="basketball",
+            frame_width=frame_width,
+            frame_height=frame_height,
             frame_index=0,
+            max_frames=max_frames,
         )
 
         build_trajectory_json(
             player_outputs=player_outputs,
             ball_outputs=ball_outputs,
             json_path=json_save_path,
+            num_frames=min(num_frames, max_frames) if max_frames else num_frames,
         )
 
     except RuntimeError as e:

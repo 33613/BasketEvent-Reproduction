@@ -220,3 +220,6 @@ __marimo__/
 # Local model weights (large files downloaded separately)
 Qwen2.5-VL-7B-Instruct/
 checkpoints/
+
+# Local videos, generated trajectories, caches, and dataset splits
+/data/

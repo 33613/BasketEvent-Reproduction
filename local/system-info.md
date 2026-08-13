@@ -36,6 +36,21 @@ TimeSformer reports `classifier.weight` and `classifier.bias` as unexpected beca
 - SciPy is the PyPI/OpenBLAS build. Combined with the deterministic visualization palette, this avoids Windows OMP Error #15 caused by duplicate Intel OpenMP runtimes.
 - The repository's original `requirements.txt` targets Torch 2.7/CUDA 12.6; this snapshot uses Torch 2.8/CUDA 12.8 for the RTX 5060.
 - Model weights and Hugging Face tokens are intentionally excluded from Git.
+- Full SAM3 video propagation is not safe on this machine. Two attempts on the
+  240-frame 1280x720 example, including a 24-frame smoke-test limit, caused a
+  system-wide Windows hang and an unclean reboot (Kernel-Power event 41 on
+  2026-08-13). The GPU recovers normally after reboot and no partial JSON is
+  produced.
+- The limiting workload is not checkpoint loading: SAM3 loads successfully in
+  8 GiB VRAM. The legacy video model runs internally at resolution 1008 and
+  configures `max_num_objects=10000`; open-vocabulary detections can grow the
+  internal tracking state. With 8 GiB VRAM under WDDM and 16 GiB system RAM,
+  this spills into shared memory/pagefile pressure before Python can report a
+  recoverable OOM.
+- Local reproduction therefore treats SAM3 import/model initialization as the
+  verified boundary and uses the author's example `_raw.json` for downstream
+  Qwen and PlayNet work. Full video propagation should be rerun on a larger-VRAM
+  CUDA machine rather than retried on this laptop.
 
 ## Source revisions
 

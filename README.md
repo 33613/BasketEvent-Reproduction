@@ -215,7 +215,7 @@ python track_one_video.py \
   --max-num-objects 10 \
   --max-ball-objects 2 \
   --sam3-num-maskmem 3 \
-  --sam3-max-cond-frames 1
+  --sam3-max-cond-frames 2
 
 python recognize.py \
   --video_path "/home/fangzilin/data/basket/$GAME/video/$CLIP.mp4" \
@@ -229,7 +229,7 @@ object limit to all SAM3 ranks, divides the tracker slots between the GPUs, and
 removes low-confidence initial candidates before propagation. The flags above
 therefore limit both the initial prompt batch and detections added later. The
 two memory flags retain less temporal history than upstream SAM3 (3 versus 7
-mask-memory frames and 1 versus 4 conditioning frames) to bound attention
+mask-memory frames and 2 versus 4 conditioning frames) to bound attention
 memory without reducing the ten-player object limit.
 
 Generate the fixed-rule annotation and inspect its report:

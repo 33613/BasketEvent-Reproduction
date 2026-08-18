@@ -84,12 +84,12 @@ class Sam3CompatibilityTest(unittest.TestCase):
             {
                 "type": "configure_tracker_memory",
                 "num_maskmem": 3,
-                "max_cond_frames_in_attn": 1,
+                "max_cond_frames_in_attn": 2,
             }
         )
 
         self.assertEqual(predictor.model.tracker.num_maskmem, 3)
-        self.assertEqual(predictor.model.tracker.max_cond_frames_in_attn, 1)
+        self.assertEqual(predictor.model.tracker.max_cond_frames_in_attn, 2)
         self.assertEqual(response["num_maskmem"], 3)
 
     def test_non_positive_limit_is_rejected(self):
@@ -110,6 +110,19 @@ class Sam3CompatibilityTest(unittest.TestCase):
                 {
                     "type": "configure_tracker_memory",
                     "num_maskmem": 0,
+                    "max_cond_frames_in_attn": 2,
+                }
+            )
+
+    def test_too_few_conditioning_frames_are_rejected(self):
+        """Reject a value that violates SAM3's conditioning-frame invariant."""
+        predictor = fake_builder()
+
+        with self.assertRaisesRegex(ValueError, "at least two"):
+            predictor.handle_request(
+                {
+                    "type": "configure_tracker_memory",
+                    "num_maskmem": 3,
                     "max_cond_frames_in_attn": 1,
                 }
             )

@@ -123,8 +123,8 @@ def _configure_tracker_memory(predictor, request):
     max_cond_frames = int(request["max_cond_frames_in_attn"])
     if num_maskmem < 1:
         raise ValueError("num_maskmem must be at least one")
-    if max_cond_frames < 1:
-        raise ValueError("max_cond_frames_in_attn must be at least one")
+    if max_cond_frames < 2:
+        raise ValueError("max_cond_frames_in_attn must be at least two")
 
     model = getattr(predictor, "model", None)
     tracker = getattr(model, "tracker", None)

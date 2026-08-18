@@ -337,13 +337,13 @@ def configure_tracker_memory(predictor, num_maskmem, max_cond_frames):
         max_cond_frames: Maximum conditioning frames used by memory attention.
 
     Raises:
-        ValueError: If either limit is less than one.
+        ValueError: If mask memory is below one or conditioning frames below two.
         RuntimeError: If a GPU rank lacks configurable tracker attributes.
     """
     if num_maskmem < 1:
         raise ValueError("--sam3-num-maskmem must be at least one")
-    if max_cond_frames < 1:
-        raise ValueError("--sam3-max-cond-frames must be at least one")
+    if max_cond_frames < 2:
+        raise ValueError("--sam3-max-cond-frames must be at least two")
 
     response = predictor.handle_request(
         request=dict(
@@ -449,10 +449,11 @@ def parse_args():
     parser.add_argument(
         "--sam3-max-cond-frames",
         type=int,
-        default=1,
+        default=2,
         help=(
             "Maximum conditioning frames participating in memory attention. "
-            "Defaults to 1 instead of the upstream 4 for Turing GPUs."
+            "Defaults to the SAM3 minimum of 2 instead of the upstream 4 "
+            "for Turing GPUs."
         ),
     )
     return parser.parse_args()
@@ -473,8 +474,8 @@ def main():
         raise ValueError("--max-ball-objects must be a positive integer")
     if args.sam3_num_maskmem < 1:
         raise ValueError("--sam3-num-maskmem must be at least one")
-    if args.sam3_max_cond_frames < 1:
-        raise ValueError("--sam3-max-cond-frames must be at least one")
+    if args.sam3_max_cond_frames < 2:
+        raise ValueError("--sam3-max-cond-frames must be at least two")
 
     video_path = str(SETTINGS.require_file(video_path, "Input video"))
     sam3_checkpoint = str(

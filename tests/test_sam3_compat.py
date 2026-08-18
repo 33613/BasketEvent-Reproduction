@@ -5,6 +5,22 @@ import unittest
 from src.sam3_compat import install_object_limit_request
 
 
+class FakeTensor:
+    """Represent a tensor whose device moves can be inspected in tests."""
+
+    def __init__(self, device):
+        """Store the current fake device string."""
+        self.device = device
+
+    def cpu(self):
+        """Return an equivalent fake tensor stored on CPU."""
+        return FakeTensor("cpu")
+
+    def to(self, device):
+        """Return an equivalent fake tensor stored on the requested device."""
+        return FakeTensor(device)
+
+
 class FakeModel:
     """Provide the SAM3 attributes modified by the compatibility hook."""
 
@@ -14,7 +30,16 @@ class FakeModel:
         self.num_obj_for_compile = 16
         self.rank = 0
         self.world_size = 2
+        self.device = "cuda:0"
         self.tracker = FakeTracker()
+
+    def _cache_frame_outputs(self, inference_state, frame_idx, obj_id_to_mask):
+        """Mimic SAM3 retaining raw object masks for one frame."""
+        inference_state["cached_frame_outputs"][frame_idx] = obj_id_to_mask.copy()
+
+    def _build_tracker_output(self, inference_state, frame_idx):
+        """Mimic SAM3 reading one retained frame output."""
+        return inference_state["cached_frame_outputs"][frame_idx].copy()
 
 
 class FakeTracker:
@@ -126,6 +151,34 @@ class Sam3CompatibilityTest(unittest.TestCase):
                     "max_cond_frames_in_attn": 1,
                 }
             )
+
+    def test_frame_cache_is_offloaded_and_restored_on_demand(self):
+        """Cached masks live on CPU and return to GPU only when requested."""
+        predictor = fake_builder()
+        response = predictor.handle_request({"type": "configure_frame_cache_offload"})
+        inference_state = {"cached_frame_outputs": {}}
+
+        predictor.model._cache_frame_outputs(
+            inference_state,
+            frame_idx=7,
+            obj_id_to_mask={3: FakeTensor("cuda:0")},
+        )
+        cached_mask = inference_state["cached_frame_outputs"][7][3]
+        restored_mask = predictor.model._build_tracker_output(inference_state, 7)[3]
+
+        self.assertEqual(response["frame_cache_device"], "cpu")
+        self.assertEqual(cached_mask.device, "cpu")
+        self.assertEqual(restored_mask.device, "cuda:0")
+
+    def test_frame_cache_configuration_is_idempotent(self):
+        """Repeated broadcasts must not wrap the cache methods repeatedly."""
+        predictor = fake_builder()
+
+        predictor.handle_request({"type": "configure_frame_cache_offload"})
+        first_cache_method = predictor.model._cache_frame_outputs
+        predictor.handle_request({"type": "configure_frame_cache_offload"})
+
+        self.assertIs(predictor.model._cache_frame_outputs, first_cache_method)
 
 
 if __name__ == "__main__":

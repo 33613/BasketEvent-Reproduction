@@ -359,6 +359,22 @@ def configure_tracker_memory(predictor, num_maskmem, max_cond_frames):
     )
 
 
+def configure_frame_cache_offload(predictor):
+    """Broadcast CPU frame-cache offloading to every SAM3 GPU rank.
+
+    SAM3 stores detector masks from every processed frame separately from its
+    tracker inference state. Moving that cache prevents GPU memory from growing
+    with video duration after ``offload_state_to_cpu`` is enabled.
+
+    Args:
+        predictor: Initialized ``Sam3VideoPredictorMultiGPU`` instance.
+    """
+    response = predictor.handle_request(
+        request=dict(type="configure_frame_cache_offload")
+    )
+    print(f"SAM3 frame cache: device={response['frame_cache_device']}")
+
+
 def parse_args():
     """Parse command-line options for SAM3 tracking.
 
@@ -499,6 +515,8 @@ def main():
         num_maskmem=args.sam3_num_maskmem,
         max_cond_frames=args.sam3_max_cond_frames,
     )
+    if args.offload_state_to_cpu:
+        configure_frame_cache_offload(predictor)
 
     print(
         "SAM3 CPU offload: "

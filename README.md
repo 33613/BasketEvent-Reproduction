@@ -230,7 +230,10 @@ removes low-confidence initial candidates before propagation. The flags above
 therefore limit both the initial prompt batch and detections added later. The
 two memory flags retain less temporal history than upstream SAM3 (3 versus 7
 mask-memory frames and 2 versus 4 conditioning frames) to bound attention
-memory without reducing the ten-player object limit.
+memory without reducing the ten-player object limit. When state offloading is
+enabled, the compatibility layer also keeps SAM3's per-frame detector mask
+cache on CPU; otherwise that separate cache grows throughout a long clip even
+though tracker state is already offloaded.
 
 Generate the fixed-rule annotation and inspect its report:
 

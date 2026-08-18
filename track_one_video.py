@@ -16,6 +16,13 @@ import torch
 import gc
 
 from settings import SETTINGS
+from src.sam3_compat import install_object_limit_request
+
+
+# SAM3 worker processes use multiprocessing ``spawn`` and import this module.
+# Installing the request hook here makes the same configuration request
+# available in the parent process and every GPU worker before model creation.
+install_object_limit_request(build_sam3_video_predictor)
 
 
 def mask_to_bbox(mask: np.ndarray):
@@ -280,49 +287,38 @@ def run_text_prompt(
     return outputs_per_frame
 
 
-def configure_object_limit(predictor, max_num_objects, gpu_count, prompt_name):
-    """Limit SAM3 masklets and the corresponding compiled object slots.
+def configure_object_limit(predictor, max_num_objects, prompt_name):
+    """Broadcast SAM3 masklet and compiled-slot limits to every GPU rank.
 
     SAM3 treats a non-positive model limit as effectively unlimited and expands
     it to 10,000 objects while reserving 16 object slots for optional compile
-    warm-up. ``max_num_objects`` limits the active masklet batch that drives
-    eager-mode attention memory. ``num_obj_for_compile`` is kept equal so a
-    future compiled run warms only the same supported object-count range.
+    warm-up. ``max_num_objects`` limits the global active masklet batch that
+    drives eager-mode attention memory. The compatibility request derives
+    ``num_obj_for_compile`` per GPU and is dispatched to all worker processes.
 
     Args:
         predictor: Initialized ``Sam3VideoPredictorMultiGPU`` instance.
-        max_num_objects: Positive maximum number of simultaneous masklets.
-        gpu_count: Number of GPUs assigned to the predictor.
+        max_num_objects: Positive global maximum number of active masklets.
         prompt_name: Human-readable prompt label used in runtime diagnostics.
 
     Raises:
-        ValueError: If the limit is not positive or multiple GPUs are used.
-        RuntimeError: If the installed SAM3 model has no configurable limit.
+        ValueError: If the limit is not positive.
+        RuntimeError: If a GPU rank has no configurable SAM3 object limit.
     """
     if max_num_objects <= 0:
         raise ValueError("--max-num-objects must be a positive integer")
-    if gpu_count != 1:
-        raise ValueError(
-            "--max-num-objects currently requires exactly one GPU because "
-            "worker-process model limits cannot be changed from the parent"
-        )
 
-    model = getattr(predictor, "model", None)
-    required_attributes = ("max_num_objects", "num_obj_for_compile")
-    if model is None or any(
-        not hasattr(model, attribute) for attribute in required_attributes
-    ):
-        raise RuntimeError(
-            "The installed SAM3 video model does not expose both "
-            "max_num_objects and num_obj_for_compile"
+    response = predictor.handle_request(
+        request=dict(
+            type="configure_object_limit",
+            max_num_objects=max_num_objects,
         )
-
-    model.max_num_objects = max_num_objects
-    model.num_obj_for_compile = max_num_objects
+    )
     print(
         f"SAM3 object limits ({prompt_name}): "
-        f"max_num_objects={model.max_num_objects}, "
-        f"num_obj_for_compile={model.num_obj_for_compile}"
+        f"global={response['max_num_objects']}, "
+        f"per_gpu_slots={response['num_obj_for_compile']}, "
+        f"world_size={response['world_size']}"
     )
 
 
@@ -390,7 +386,8 @@ def parse_args():
         help=(
             "Maximum simultaneous player masklets and compiled object slots. "
             "The default of 10 matches the number of on-court players and "
-            "reduces attention memory on pre-Ampere GPUs. Single GPU only."
+            "reduces attention memory on pre-Ampere GPUs. In multi-GPU mode, "
+            "the global limit is synchronized and divided across all ranks."
         ),
     )
     parser.add_argument(
@@ -413,17 +410,12 @@ def main():
     video_path = args.video_path
     json_save_path = args.json_save_path
 
-    # Validate before model construction so an invalid multi-GPU invocation
-    # cannot leave spawned SAM3 worker processes behind.
+    # Validate before model construction so invalid arguments cannot leave
+    # spawned SAM3 worker processes behind.
     if args.max_num_objects <= 0:
         raise ValueError("--max-num-objects must be a positive integer")
     if args.max_ball_objects <= 0:
         raise ValueError("--max-ball-objects must be a positive integer")
-    if len(gpus_to_use) != 1:
-        raise ValueError(
-            "Object limiting currently requires exactly one GPU; pass "
-            "--gpus_to_use with one device such as '0'"
-        )
 
     video_path = str(SETTINGS.require_file(video_path, "Input video"))
     sam3_checkpoint = str(
@@ -440,7 +432,6 @@ def main():
     configure_object_limit(
         predictor,
         max_num_objects=args.max_num_objects,
-        gpu_count=len(gpus_to_use),
         prompt_name="players",
     )
 
@@ -477,7 +468,6 @@ def main():
         configure_object_limit(
             predictor,
             max_num_objects=args.max_ball_objects,
-            gpu_count=len(gpus_to_use),
             prompt_name="basketball",
         )
         ball_outputs = run_text_prompt(

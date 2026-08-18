@@ -209,7 +209,7 @@ CLIP=100
 python track_one_video.py \
   --video_path "/home/fangzilin/data/basket/$GAME/video/$CLIP.mp4" \
   --json_save_path "/home/fangzilin/data/basket_artifacts/$GAME/tracks/raw/$CLIP.json" \
-  --gpus_to_use "0" \
+  --gpus_to_use "0,1" \
   --offload-video-to-cpu \
   --offload-state-to-cpu \
   --max-num-objects 10 \
@@ -222,10 +222,10 @@ python recognize.py \
   --roster_json "/home/fangzilin/data/basket_artifacts/$GAME/metadata/recognize_roster.json"
 ```
 
-On pre-Ampere GPUs, `track_one_video.py` ranks the objects returned by each
-initial text prompt and removes low-confidence candidates before propagation.
-The two object-limit flags above therefore control the retained player and ball
-tracker batches, rather than only limiting detections added on later frames.
+On the two pre-Ampere TITAN RTX GPUs, `track_one_video.py` broadcasts each
+object limit to all SAM3 ranks, divides the tracker slots between the GPUs, and
+removes low-confidence initial candidates before propagation. The flags above
+therefore limit both the initial prompt batch and detections added later.
 
 Generate the fixed-rule annotation and inspect its report:
 

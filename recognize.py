@@ -14,7 +14,10 @@ from collections import defaultdict
 
 from settings import SETTINGS
 
-def crop_by_bbox_xywh(img_bgr: np.ndarray, bbox_xywh: List[int], pad_ratio: float = 0.2) -> Optional[np.ndarray]:
+
+def crop_by_bbox_xywh(
+    img_bgr: np.ndarray, bbox_xywh: List[int], pad_ratio: float = 0.2
+) -> Optional[np.ndarray]:
     H, W = img_bgr.shape[:2]
     x, y, w, h = map(int, bbox_xywh)
 
@@ -40,7 +43,7 @@ def _uniform_sample_indices(n, k: int = 10) -> List[int]:
         return []
     if n == 1:
         return [0] * k
-    
+
     pos = np.linspace(0, n - 1, num=k)
     idx = np.rint(pos).astype(int)
     idx = np.clip(idx, 0, n - 1)
@@ -71,7 +74,9 @@ def build_pid_to_crops(
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {video_path}")
 
-    pid_to_crops: Dict[str, List[Image.Image]] = {pid: [] for pid in pid_to_frames.keys()}
+    pid_to_crops: Dict[str, List[Image.Image]] = {
+        pid: [] for pid in pid_to_frames.keys()
+    }
 
     for fi in sorted(idx):
         cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
@@ -105,6 +110,7 @@ def build_pid_to_crops(
 
     return pid_to_crops
 
+
 def build_roster_text(roster_json_path: str) -> str:
     with open(roster_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -124,18 +130,25 @@ def build_roster_text(roster_json_path: str) -> str:
 
     lines = []
     lines.append(f"Team jersey colors in this game: {team_color}")
-    lines.append("Roster (use this table to map jersey number + jersey color to player name):")
+    lines.append(
+        "Roster (use this table to map jersey number + jersey color to player name):"
+    )
     for color in sorted(color_map.keys()):
         lines.append(f"- Color: {color}")
+
         # number sorted numerically when possible
         def _num_key(x):
-            try: return int(x)
-            except: return 10**9
+            try:
+                return int(x)
+            except:
+                return 10**9
+
         for num in sorted(color_map[color].keys(), key=_num_key):
             names = color_map[color][num]
             # 如果同色同号理论上不该有多个，但以防万一保留列表
             lines.append(f"  {num}: {', '.join(names)}")
     return "\n".join(lines)
+
 
 def build_onepass_prompt(roster_text: str) -> str:
     return f"""You are given 10 cropped images that are supposed to show the SAME tracked entity from a basketball game (same player ID), but the tracking/bounding boxes may be noisy. Some crops may contain:
@@ -186,6 +199,7 @@ Guidance for validity:
 - Likely INVALID: referee uniform (often gray/black with stripes), whistle, no jersey number anywhere across all crops, seated bench context, crowd faces, empty/background, heavy blur for most crops, or different people across the 10 crops.
 """
 
+
 def parse_vlm_json(text: str) -> Dict[str, Any]:
     if isinstance(text, list):
         text = text[0]
@@ -205,6 +219,7 @@ def parse_vlm_json(text: str) -> Dict[str, Any]:
             "evidence": "Model output could not be parsed as JSON",
             "_raw_output": text,
         }
+
 
 def rec_one_video(model, processor, video_path, bbox_json_path, roster_json, device):
     pid2crops = build_pid_to_crops(
@@ -244,7 +259,8 @@ def rec_one_video(model, processor, video_path, bbox_json_path, roster_json, dev
 
         generated_ids = model.generate(**inputs, max_new_tokens=128)
         generated_ids_trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
         ]
 
         output_text = processor.batch_decode(
@@ -264,15 +280,21 @@ def clamp(v: int, lo: int, hi: int) -> int:
 
 def collect_ball_tracks(
     ann: Dict[str, Any],
-) -> Tuple[Dict[int, Dict[str, Optional[Tuple[float, float, float, float]]]], List[str]]:
-    tracks_by_frame: Dict[int, Dict[str, Optional[Tuple[float, float, float, float]]]] = defaultdict(dict)
+) -> Tuple[
+    Dict[int, Dict[str, Optional[Tuple[float, float, float, float]]]], List[str]
+]:
+    tracks_by_frame: Dict[
+        int, Dict[str, Optional[Tuple[float, float, float, float]]]
+    ] = defaultdict(dict)
     candidate_ids = []
 
     for obj_id, payload in ann.items():
         obj_id = str(obj_id)
         if not obj_id.startswith("ball"):
             continue
-        if not isinstance(payload, dict) or not isinstance(payload.get("trajectory"), list):
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("trajectory"), list
+        ):
             continue
 
         has_bbox = False
@@ -280,7 +302,9 @@ def collect_ball_tracks(
             if bbox is None:
                 continue
             if len(bbox) != 4:
-                raise ValueError(f"Invalid ball bbox at frame {frame_id}, id {obj_id}: {bbox}")
+                raise ValueError(
+                    f"Invalid ball bbox at frame {frame_id}, id {obj_id}: {bbox}"
+                )
             tracks_by_frame[frame_id][obj_id] = tuple(float(v) for v in bbox)
             has_bbox = True
 
@@ -293,7 +317,9 @@ def collect_ball_tracks(
 def collect_by_id(
     tracks_by_frame: Dict[int, Dict[str, Optional[Tuple[float, float, float, float]]]]
 ) -> Dict[str, List[Tuple[int, Tuple[float, float, float, float]]]]:
-    by_id: Dict[str, List[Tuple[int, Tuple[float, float, float, float]]]] = defaultdict(list)
+    by_id: Dict[str, List[Tuple[int, Tuple[float, float, float, float]]]] = defaultdict(
+        list
+    )
     for frame_id, obj_dict in tracks_by_frame.items():
         for obj_id, bbox in obj_dict.items():
             if bbox is not None:
@@ -353,7 +379,11 @@ def compute_ball_track_stats(
             "mean_area": float(np.mean(area)),
             "mean_aspect": float(np.mean(w / np.maximum(h, 1e-6))),
             "median_speed_px_per_frame": float(np.median(speeds)) if speeds else 0.0,
-            "move_range": float(math.hypot(float(np.max(cx) - np.min(cx)), float(np.max(cy) - np.min(cy)))),
+            "move_range": float(
+                math.hypot(
+                    float(np.max(cx) - np.min(cx)), float(np.max(cy) - np.min(cy))
+                )
+            ),
         }
         row["heuristic_score"] = heuristic_ball_score(row)
         rows.append(row)
@@ -388,7 +418,9 @@ def heuristic_ball_score(row: Dict[str, Any]) -> float:
     )
 
 
-def choose_sample_items(items: List[Tuple[int, Tuple[float, float, float, float]]], k: int = 8):
+def choose_sample_items(
+    items: List[Tuple[int, Tuple[float, float, float, float]]], k: int = 8
+):
     if len(items) <= k:
         return items
     idx = np.linspace(0, len(items) - 1, k).round().astype(int)
@@ -442,7 +474,9 @@ def build_ball_contact_sheet(
 
     for obj_id in candidate_ids:
         cells = []
-        for frame_id, bbox in choose_sample_items(by_id.get(str(obj_id), []), k=samples_per_id):
+        for frame_id, bbox in choose_sample_items(
+            by_id.get(str(obj_id), []), k=samples_per_id
+        ):
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -462,9 +496,16 @@ def build_ball_contact_sheet(
         if not cells:
             continue
 
-        row = Image.new("RGB", (cell_size * samples_per_id, cell_size + 34), color=(245, 245, 245))
+        row = Image.new(
+            "RGB", (cell_size * samples_per_id, cell_size + 34), color=(245, 245, 245)
+        )
         draw = ImageDraw.Draw(row)
-        draw.text((4, cell_size + 10), f"candidate ball id = {obj_id}", fill=(0, 0, 0), font=font)
+        draw.text(
+            (4, cell_size + 10),
+            f"candidate ball id = {obj_id}",
+            fill=(0, 0, 0),
+            font=font,
+        )
         for i, cell in enumerate(cells):
             row.paste(cell, (i * cell_size, 0))
         rows.append(row)
@@ -478,7 +519,12 @@ def build_ball_contact_sheet(
     H = sum(r.height for r in rows) + 44
     sheet = Image.new("RGB", (W, H), color=(255, 255, 255))
     draw = ImageDraw.Draw(sheet)
-    draw.text((8, 10), "Find the real basketball track id. Red boxes are bboxes.", fill=(0, 0, 0), font=font)
+    draw.text(
+        (8, 10),
+        "Find the real basketball track id. Red boxes are bboxes.",
+        fill=(0, 0, 0),
+        font=font,
+    )
 
     y = 44
     for row in rows:
@@ -577,7 +623,9 @@ def rec_ball_one_video(
                 "real_ball_id": selected_id,
                 "confidence": 1.0,
                 "reason": "Only one non-null ball candidate exists.",
-                "ranking": [{"id": selected_id, "score": 1.0, "comment": "single candidate"}],
+                "ranking": [
+                    {"id": selected_id, "score": 1.0, "comment": "single candidate"}
+                ],
             },
             "stats": stats_rows,
         }
@@ -589,9 +637,19 @@ def rec_ball_one_video(
         samples_per_id=samples_per_id,
     )
     prompt = build_ball_prompt([r for r in stats_rows if r["id"] in set(candidate_ids)])
-    messages = [{"role": "user", "content": [{"type": "image", "image": sheet}, {"type": "text", "text": prompt}]}]
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": sheet},
+                {"type": "text", "text": prompt},
+            ],
+        }
+    ]
 
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
         text=[text],
@@ -605,7 +663,8 @@ def rec_ball_one_video(
     with torch.no_grad():
         generated_ids = model.generate(**inputs, max_new_tokens=256, do_sample=False)
     generated_ids_trimmed = [
-        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+        out_ids[len(in_ids) :]
+        for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
     ]
     output_text = processor.batch_decode(
         generated_ids_trimmed,
@@ -630,9 +689,7 @@ def rec_ball_one_video(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Run Qwen"
-    )
+    parser = argparse.ArgumentParser(description="Run Qwen")
     parser.add_argument(
         "--video_path",
         type=str,
@@ -681,9 +738,7 @@ def main():
     gpus_to_use = args.gpus_to_use
     device = f"cuda:{gpus_to_use.split(',')[0]}" if torch.cuda.is_available() else "cpu"
     video_path = str(SETTINGS.require_file(video_path, "Input video"))
-    bbox_json_path = str(
-        SETTINGS.require_file(bbox_json_path, "Raw trajectory JSON")
-    )
+    bbox_json_path = str(SETTINGS.require_file(bbox_json_path, "Raw trajectory JSON"))
     ROSTER_JSON = str(SETTINGS.require_file(ROSTER_JSON, "Roster JSON"))
     model_path = str(
         SETTINGS.require_directory(args.qwen_model, "Qwen model directory")
@@ -720,7 +775,9 @@ def main():
         local_files_only=SETTINGS.hf_local_files_only,
     )
 
-    results = rec_one_video(model, processor, video_path, bbox_json_path, ROSTER_JSON, device=device)
+    results = rec_one_video(
+        model, processor, video_path, bbox_json_path, ROSTER_JSON, device=device
+    )
     # print(results)
     with open(bbox_json_path, "r", encoding="utf-8") as f:
         ann = json.load(f)
@@ -730,6 +787,7 @@ def main():
     for pid, out in results.items():
         if out.get("is_valid_player") is True:
             valid_results[f"player_{valid_count}"] = {
+                "source_track_id": pid,
                 "jersey_number": out.get("jersey_number"),
                 "jersey_color": out.get("jersey_color"),
                 "player_name": out.get("player_name"),
@@ -747,13 +805,13 @@ def main():
     selected_ball_id = ball_result.get("selected_ball_id")
     if selected_ball_id is not None and selected_ball_id in ann:
         valid_results["ball"] = {
+            "source_track_id": selected_ball_id,
             "trajectory": ann.get(selected_ball_id, {}).get("trajectory"),
         }
 
     with open(json_save_path, "w", encoding="utf-8") as f:
         json.dump(valid_results, f, ensure_ascii=False, indent=2)
 
-    
 
 if __name__ == "__main__":
     main()

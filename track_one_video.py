@@ -322,6 +322,43 @@ def configure_object_limit(predictor, max_num_objects, prompt_name):
     )
 
 
+def configure_tracker_memory(predictor, num_maskmem, max_cond_frames):
+    """Broadcast reduced temporal-memory settings to every SAM3 GPU rank.
+
+    SAM3 normally retains seven mask-memory frames and lets four conditioning
+    frames participate in memory attention. Those defaults produce increasing
+    attention pressure around reconditioning frames on Turing GPUs. This
+    compatibility profile retains the most recent temporal context while
+    bounding the attention key/value sequence on every rank.
+
+    Args:
+        predictor: Initialized ``Sam3VideoPredictorMultiGPU`` instance.
+        num_maskmem: Total mask-memory slots, including the input frame.
+        max_cond_frames: Maximum conditioning frames used by memory attention.
+
+    Raises:
+        ValueError: If either limit is less than one.
+        RuntimeError: If a GPU rank lacks configurable tracker attributes.
+    """
+    if num_maskmem < 1:
+        raise ValueError("--sam3-num-maskmem must be at least one")
+    if max_cond_frames < 1:
+        raise ValueError("--sam3-max-cond-frames must be at least one")
+
+    response = predictor.handle_request(
+        request=dict(
+            type="configure_tracker_memory",
+            num_maskmem=num_maskmem,
+            max_cond_frames_in_attn=max_cond_frames,
+        )
+    )
+    print(
+        "SAM3 tracker memory limits: "
+        f"num_maskmem={response['num_maskmem']}, "
+        f"max_cond_frames_in_attn={response['max_cond_frames_in_attn']}"
+    )
+
+
 def parse_args():
     """Parse command-line options for SAM3 tracking.
 
@@ -400,6 +437,24 @@ def parse_args():
             "one false positive without using the player-sized batch."
         ),
     )
+    parser.add_argument(
+        "--sam3-num-maskmem",
+        type=int,
+        default=3,
+        help=(
+            "Number of SAM3 mask-memory frames retained by each tracker. "
+            "Defaults to 3 instead of the upstream 7 for Turing GPUs."
+        ),
+    )
+    parser.add_argument(
+        "--sam3-max-cond-frames",
+        type=int,
+        default=1,
+        help=(
+            "Maximum conditioning frames participating in memory attention. "
+            "Defaults to 1 instead of the upstream 4 for Turing GPUs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -416,6 +471,10 @@ def main():
         raise ValueError("--max-num-objects must be a positive integer")
     if args.max_ball_objects <= 0:
         raise ValueError("--max-ball-objects must be a positive integer")
+    if args.sam3_num_maskmem < 1:
+        raise ValueError("--sam3-num-maskmem must be at least one")
+    if args.sam3_max_cond_frames < 1:
+        raise ValueError("--sam3-max-cond-frames must be at least one")
 
     video_path = str(SETTINGS.require_file(video_path, "Input video"))
     sam3_checkpoint = str(
@@ -433,6 +492,11 @@ def main():
         predictor,
         max_num_objects=args.max_num_objects,
         prompt_name="players",
+    )
+    configure_tracker_memory(
+        predictor,
+        num_maskmem=args.sam3_num_maskmem,
+        max_cond_frames=args.sam3_max_cond_frames,
     )
 
     print(

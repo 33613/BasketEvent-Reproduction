@@ -1,10 +1,10 @@
 """Runtime compatibility hooks for SAM3 on the BasketEvent server.
 
 SAM3 constructs one predictor in each GPU worker process. Mutating only the
-parent predictor after construction therefore leaves worker-side object limits
-unchanged. This module adds a small request type to the exact predictor base
+parent predictor after construction therefore leaves worker-side limits
+unchanged. This module adds small request types to the exact predictor base
 class used by the imported builder, allowing the existing multi-GPU dispatcher
-to broadcast the limit to every rank.
+to broadcast object and temporal-memory limits to every rank.
 """
 
 import math
@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 
 _CONFIGURE_OBJECT_LIMIT = "configure_object_limit"
+_CONFIGURE_TRACKER_MEMORY = "configure_tracker_memory"
 _INSTALL_MARKER = "_basketevent_object_limit_request"
 
 
@@ -61,8 +62,11 @@ def install_object_limit_request(
 
     @wraps(original_handler)
     def handle_request_with_object_limit(self, request):
-        """Handle BasketEvent's limit request or delegate to standard SAM3."""
-        if request.get("type") != _CONFIGURE_OBJECT_LIMIT:
+        """Handle BasketEvent's limit requests or delegate to standard SAM3."""
+        request_type = request.get("type")
+        if request_type == _CONFIGURE_TRACKER_MEMORY:
+            return _configure_tracker_memory(self, request)
+        if request_type != _CONFIGURE_OBJECT_LIMIT:
             return original_handler(self, request)
 
         max_num_objects = int(request["max_num_objects"])
@@ -98,3 +102,52 @@ def install_object_limit_request(
 
     setattr(handle_request_with_object_limit, _INSTALL_MARKER, True)
     base_class.handle_request = handle_request_with_object_limit
+
+
+def _configure_tracker_memory(predictor, request):
+    """Apply temporal-memory limits before a SAM3 session is initialized.
+
+    Args:
+        predictor: Predictor instance owned by one GPU rank.
+        request: Compatibility request containing the two memory limits.
+
+    Returns:
+        Applied values and the current rank for runtime diagnostics.
+
+    Raises:
+        ValueError: If either limit is less than one.
+        RuntimeError: If the installed SAM3 tracker lacks the expected
+            configurable attributes.
+    """
+    num_maskmem = int(request["num_maskmem"])
+    max_cond_frames = int(request["max_cond_frames_in_attn"])
+    if num_maskmem < 1:
+        raise ValueError("num_maskmem must be at least one")
+    if max_cond_frames < 1:
+        raise ValueError("max_cond_frames_in_attn must be at least one")
+
+    model = getattr(predictor, "model", None)
+    tracker = getattr(model, "tracker", None)
+    required_attributes = ("num_maskmem", "max_cond_frames_in_attn")
+    if tracker is None or any(
+        not hasattr(tracker, attribute) for attribute in required_attributes
+    ):
+        raise RuntimeError(
+            "The installed SAM3 tracker does not expose temporal-memory limits"
+        )
+
+    rank = int(getattr(model, "rank", 0))
+    tracker.num_maskmem = num_maskmem
+    tracker.max_cond_frames_in_attn = max_cond_frames
+    print(
+        "SAM3 rank memory limits: "
+        f"rank={rank}, num_maskmem={tracker.num_maskmem}, "
+        f"max_cond_frames_in_attn={tracker.max_cond_frames_in_attn}",
+        flush=True,
+    )
+    return {
+        "is_success": True,
+        "rank": rank,
+        "num_maskmem": tracker.num_maskmem,
+        "max_cond_frames_in_attn": tracker.max_cond_frames_in_attn,
+    }

@@ -14,6 +14,16 @@ class FakeModel:
         self.num_obj_for_compile = 16
         self.rank = 0
         self.world_size = 2
+        self.tracker = FakeTracker()
+
+
+class FakeTracker:
+    """Provide runtime-configurable temporal-memory attributes."""
+
+    def __init__(self):
+        """Initialize the upstream SAM3 temporal-memory defaults."""
+        self.num_maskmem = 7
+        self.max_cond_frames_in_attn = 4
 
 
 class Sam3BasePredictor:
@@ -66,6 +76,22 @@ class Sam3CompatibilityTest(unittest.TestCase):
 
         self.assertEqual(response, {"delegated_type": "start_session"})
 
+    def test_tracker_memory_limits_are_applied(self):
+        """Reduced temporal-memory settings should reach the tracker."""
+        predictor = fake_builder()
+
+        response = predictor.handle_request(
+            {
+                "type": "configure_tracker_memory",
+                "num_maskmem": 3,
+                "max_cond_frames_in_attn": 1,
+            }
+        )
+
+        self.assertEqual(predictor.model.tracker.num_maskmem, 3)
+        self.assertEqual(predictor.model.tracker.max_cond_frames_in_attn, 1)
+        self.assertEqual(response["num_maskmem"], 3)
+
     def test_non_positive_limit_is_rejected(self):
         """Invalid limits should fail before mutating model state."""
         predictor = fake_builder()
@@ -73,6 +99,19 @@ class Sam3CompatibilityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive integer"):
             predictor.handle_request(
                 {"type": "configure_object_limit", "max_num_objects": 0}
+            )
+
+    def test_invalid_tracker_memory_is_rejected(self):
+        """Tracker memory limits must preserve at least one frame."""
+        predictor = fake_builder()
+
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            predictor.handle_request(
+                {
+                    "type": "configure_tracker_memory",
+                    "num_maskmem": 0,
+                    "max_cond_frames_in_attn": 1,
+                }
             )
 
 

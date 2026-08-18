@@ -8,6 +8,8 @@ import pandas as pd
 import torch
 import gc
 
+from settings import SETTINGS
+
 def mask_to_bbox(mask: np.ndarray):
     ys, xs = np.where(mask > 0)
     if len(xs) == 0:
@@ -162,8 +164,20 @@ def parse_args():
     parser.add_argument(
         "--gpus_to_use",
         type=str,
-        default="6",
+        default=SETTINGS.gpu_ids,
         help="GPU ids, e.g. '0' or '0,1,2'",
+    )
+    parser.add_argument(
+        "--sam3_checkpoint",
+        type=str,
+        default=str(SETTINGS.sam3_checkpoint),
+        help="Path to the local SAM3 checkpoint.",
+    )
+    parser.add_argument(
+        "--sam3_bpe",
+        type=str,
+        default=str(SETTINGS.sam3_bpe),
+        help="Path to the SAM3 BPE vocabulary.",
     )
     return parser.parse_args()
 
@@ -174,11 +188,18 @@ def main():
     video_path = args.video_path
     json_save_path = args.json_save_path
 
-    predictor = build_sam3_video_predictor(gpus_to_use=gpus_to_use)
+    video_path = str(SETTINGS.require_file(video_path, "Input video"))
+    sam3_checkpoint = str(
+        SETTINGS.require_file(args.sam3_checkpoint, "SAM3 checkpoint")
+    )
+    sam3_bpe = str(SETTINGS.require_file(args.sam3_bpe, "SAM3 BPE vocabulary"))
+    SETTINGS.create_parent(json_save_path)
 
-    if not os.path.exists(video_path):
-        print(f"[ERROR] video not found, skip: {video_path}")
-        return
+    predictor = build_sam3_video_predictor(
+        checkpoint_path=sam3_checkpoint,
+        bpe_path=sam3_bpe,
+        gpus_to_use=gpus_to_use,
+    )
 
     session_id = None
     try:

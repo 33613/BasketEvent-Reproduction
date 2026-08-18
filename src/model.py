@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from torchvision.ops import roi_align
 from typing import Optional, Dict, Any, Tuple, List
 
+from settings import SETTINGS
+
 
 # =========================================================
 # 1) BBox embedding
@@ -134,8 +136,9 @@ class TimeSformerBackbone(nn.Module):
     """
     def __init__(
         self,
-        pretrained_name: str = "facebook/timesformer-base-finetuned-k400",
+        pretrained_name: str = str(SETTINGS.timesformer_model),
         use_pretrained: bool = False,
+        local_files_only: bool = SETTINGS.hf_local_files_only,
     ):
         super().__init__()
         try:
@@ -144,10 +147,16 @@ class TimeSformerBackbone(nn.Module):
             raise ImportError("请先 pip install transformers，且版本需包含 TimesformerModel。原始错误: " + str(e))
 
         if use_pretrained:
-            self.model = TimesformerModel.from_pretrained(pretrained_name)
+            self.model = TimesformerModel.from_pretrained(
+                pretrained_name,
+                local_files_only=local_files_only,
+            )
         else:
             # 如果 pretrained_name 是本地 config 或模型名，这里仍可用 config 初始化。
-            cfg = TimesformerConfig.from_pretrained(pretrained_name)
+            cfg = TimesformerConfig.from_pretrained(
+                pretrained_name,
+                local_files_only=local_files_only,
+            )
             self.model = TimesformerModel(cfg)
 
         self.hidden_dim = self.model.config.hidden_size
@@ -796,7 +805,8 @@ class PlayerEventModel(nn.Module):
     def __init__(
         self,
         num_classes: int,
-        pretrained_name: str = "/GPFS/rhome/yuzhang/.cache/huggingface/hub/models--facebook--timesformer-base-finetuned-k400/snapshots/f300f6ac53f51b74e7f691877142ac426ce800ad",
+        pretrained_name: str = str(SETTINGS.timesformer_model),
+        local_files_only: bool = SETTINGS.hf_local_files_only,
         roi_out_size: Tuple[int, int] = (1, 1),
         roi_out_dim: Optional[int] = None,
         image_size: int = 224,
@@ -822,6 +832,7 @@ class PlayerEventModel(nn.Module):
         self.backbone = TimeSformerBackbone(
             pretrained_name=pretrained_name,
             use_pretrained=True,
+            local_files_only=local_files_only,
         )
 
         C = self.backbone.hidden_dim

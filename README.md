@@ -50,7 +50,43 @@ pip install -r requirements.txt
 If `torchvision.io.read_video` cannot read videos, make sure FFmpeg is installed
 on the system.
 
-### 1.2 SAM3 Checkpoint
+### 1.2 Local path configuration
+
+`settings.py` centralizes server paths. The checked-in defaults are:
+
+```text
+/home/fangzilin/data/basket             BARD staging data
+/home/fangzilin/data/basket_artifacts   reusable SAM3/Qwen outputs
+/home/fangzilin/data/basket_runtime     videos/train/valid/test runtime layout
+/home/fangzilin/models                  downloaded and trained model weights
+```
+
+The corresponding model paths are:
+
+```text
+/home/fangzilin/models/sam3/sam3.pt
+/home/fangzilin/models/Qwen2.5-VL-7B-Instruct/
+/home/fangzilin/models/timesformer-base-finetuned-k400/
+/home/fangzilin/models/basketevent/playnet.pt
+```
+
+Defaults can be changed without editing source code:
+
+```bash
+export BASKETEVENT_DATA_ROOT=/home/fangzilin/data/basket
+export BASKETEVENT_ARTIFACTS_ROOT=/home/fangzilin/data/basket_artifacts
+export BASKETEVENT_RUNTIME_ROOT=/home/fangzilin/data/basket_runtime
+export BASKETEVENT_MODEL_ROOT=/home/fangzilin/models
+export BASKETEVENT_GPU_IDS=0
+export BASKETEVENT_HF_LOCAL_FILES_ONLY=true
+```
+
+Entry-point options override these environment variables. Run, for example,
+`python inference.py --help` to see path overrides for one experiment. Importing
+`settings.py` only reads configuration; output directories are created by the
+entry point that needs them.
+
+### 1.3 SAM3 Checkpoint
 
 SAM3 checkpoint:
 
@@ -65,14 +101,14 @@ URL:
 https://huggingface.co/facebook/sam3
 ```
 
-### 1.3 Qwen2.5-VL Checkpoint
+### 1.4 Qwen2.5-VL Checkpoint
 
 Qwen2.5-VL checkpoint:
 
 ```bash
 hf auth login
 huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct \
-  --local-dir /GPFS/public/Qwen2.5-VL-7B-Instruct
+  --local-dir /home/fangzilin/models/Qwen2.5-VL-7B-Instruct
 ```
 
 URL:
@@ -80,9 +116,6 @@ URL:
 ```text
 https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct
 ```
-
-`recognize.py` currently expects this local path:
-
 
 ## 2. Data Storage Format
 

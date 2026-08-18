@@ -9,10 +9,11 @@ import torch.nn.functional as F
 from torchvision.io import read_video
 
 # # Ensure root path contains src module when running from NBA or NBA/src.
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from settings import SETTINGS
 from src.dataset import load_ball_from_json_resized, load_bbox_from_json_resized_onepid, LABEL_MAP
 from src.model import PlayerEventModel
 
@@ -21,9 +22,11 @@ REVERSE_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inference for PlayerEventModel from raw video + trajectories")
-    parser.add_argument("--video", type=str, default="examples/4712c593-1cd3-fc7f-be55-1b967fadac0f_1280x720.mp4", help="Path to the basketball video file")
-    parser.add_argument("--traj_json", type=str, default="examples/4712c593-1cd3-fc7f-be55-1b967fadac0f_1280x720.json", help="Path to the JSON file with player trajectories")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt). If omitted, model uses pretrained TimeSformer weights only.")
+    parser.add_argument("--video", type=str, default=str(SETTINGS.project_root / "examples" / "4712c593-1cd3-fc7f-be55-1b967fadac0f_1280x720.mp4"), help="Path to the basketball video file")
+    parser.add_argument("--traj_json", type=str, default=str(SETTINGS.project_root / "examples" / "4712c593-1cd3-fc7f-be55-1b967fadac0f_1280x720.json"), help="Path to the JSON file with player trajectories")
+    parser.add_argument("--checkpoint", type=str, default=str(SETTINGS.event_checkpoint), help="Path to the BasketEvent model checkpoint (.pt).")
+    parser.add_argument("--timesformer_model", type=str, default=str(SETTINGS.timesformer_model), help="Path to the local TimeSformer model directory.")
+    parser.add_argument("--gpu_id", type=int, default=int(SETTINGS.gpu_ids.split(",")[0]), help="Visible CUDA device index used for inference.")
     parser.add_argument("--player_ids", type=str, default="", help="Comma-separated list of player IDs to use. If empty, all players in the JSON (except 'ball') are used in sorted order.")
     parser.add_argument("--starts", type=str, default="0", help="Comma-separated start indices for clip sampling. Default is 0.")
     parser.add_argument("--bag_clips", type=int, default=12, help="Number of clips (M). If starts is provided, it overrides bag_clips.")
@@ -221,7 +224,7 @@ def build_clips_from_video(
 
 
 def load_checkpoint(checkpoint_path: str, model: torch.nn.Module, device: torch.device):
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if isinstance(ckpt, dict) and "model" in ckpt:
         state_dict = ckpt["model"]
     else:
@@ -233,8 +236,20 @@ def load_checkpoint(checkpoint_path: str, model: torch.nn.Module, device: torch.
             new_state_dict[k[len("module."):]] = v
         else:
             new_state_dict[k] = v
-    model.load_state_dict(new_state_dict, strict=False)
-    return ckpt.get("epoch", None), ckpt.get("global_step", None)
+    incompatible = model.load_state_dict(new_state_dict, strict=False)
+    if incompatible.missing_keys:
+        print(
+            f"[Checkpoint] missing keys ({len(incompatible.missing_keys)}): "
+            f"{incompatible.missing_keys[:20]}"
+        )
+    if incompatible.unexpected_keys:
+        print(
+            f"[Checkpoint] unexpected keys ({len(incompatible.unexpected_keys)}): "
+            f"{incompatible.unexpected_keys[:20]}"
+        )
+
+    metadata = ckpt if isinstance(ckpt, dict) else {}
+    return metadata.get("epoch"), metadata.get("global_step")
 
 
 @torch.no_grad()
@@ -272,6 +287,20 @@ def infer_one_video(
 
 def main() -> None:
     args = parse_args()
+
+    args.video = str(SETTINGS.require_file(args.video, "Input video"))
+    args.traj_json = str(
+        SETTINGS.require_file(args.traj_json, "Clean trajectory JSON")
+    )
+    args.checkpoint = str(
+        SETTINGS.require_file(args.checkpoint, "BasketEvent checkpoint")
+    )
+    args.timesformer_model = str(
+        SETTINGS.require_directory(
+            args.timesformer_model,
+            "TimeSformer model directory",
+        )
+    )
 
     traj_data = load_trajectory_json(args.traj_json)
     all_player_ids = [pid for pid in traj_data.keys() if pid != "ball"]
@@ -315,10 +344,14 @@ def main() -> None:
         fmt=args.traj_format,
     )
 
-    device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu"
+    )
     num_classes = len(LABEL_MAP)
     model = PlayerEventModel(
         num_classes=num_classes,
+        pretrained_name=args.timesformer_model,
+        local_files_only=SETTINGS.hf_local_files_only,
         image_size=args.img_size,
         roi_out_size=(1, 1),
         pooling_mode="gated",

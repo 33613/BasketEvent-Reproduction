@@ -4,9 +4,15 @@ import numpy as np
 import os, torch, math, re
 from PIL import Image, ImageDraw, ImageFont
 import argparse
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from transformers import (
+    AutoProcessor,
+    BitsAndBytesConfig,
+    Qwen2_5_VLForConditionalGeneration,
+)
 from qwen_vl_utils import process_vision_info
 from collections import defaultdict
+
+from settings import SETTINGS
 
 def crop_by_bbox_xywh(img_bgr: np.ndarray, bbox_xywh: List[int], pad_ratio: float = 0.2) -> Optional[np.ndarray]:
     H, W = img_bgr.shape[:2]
@@ -652,8 +658,14 @@ def parse_args():
     parser.add_argument(
         "--gpus_to_use",
         type=str,
-        default="6",
+        default=SETTINGS.gpu_ids,
         help="GPU ids, e.g. '0' or '0,1,2'",
+    )
+    parser.add_argument(
+        "--qwen_model",
+        type=str,
+        default=str(SETTINGS.qwen_model),
+        help="Path to the local Qwen2.5-VL model directory.",
     )
     return parser.parse_args()
 
@@ -666,10 +678,45 @@ def main():
     ROSTER_JSON = args.roster_json
     gpus_to_use = args.gpus_to_use
     device = f"cuda:{gpus_to_use.split(',')[0]}" if torch.cuda.is_available() else "cpu"
+    video_path = str(SETTINGS.require_file(video_path, "Input video"))
+    bbox_json_path = str(
+        SETTINGS.require_file(bbox_json_path, "Raw trajectory JSON")
+    )
+    ROSTER_JSON = str(SETTINGS.require_file(ROSTER_JSON, "Roster JSON"))
+    model_path = str(
+        SETTINGS.require_directory(args.qwen_model, "Qwen model directory")
+    )
+    SETTINGS.create_parent(json_save_path)
+
+    model_kwargs = {
+        "local_files_only": SETTINGS.hf_local_files_only,
+        "low_cpu_mem_usage": True,
+    }
+    if torch.cuda.is_available():
+        model_kwargs.update(
+            {
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                ),
+                "device_map": {"": device},
+                "torch_dtype": torch.float16,
+            }
+        )
+    else:
+        model_kwargs["torch_dtype"] = torch.float32
+
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        "Qwen2.5-VL-7B-Instruct", torch_dtype="auto"
-    ).to(device)
-    processor = AutoProcessor.from_pretrained("Qwen2.5-VL-7B-Instruct")
+        model_path,
+        **model_kwargs,
+    )
+    model.eval()
+    processor = AutoProcessor.from_pretrained(
+        model_path,
+        local_files_only=SETTINGS.hf_local_files_only,
+    )
 
     results = rec_one_video(model, processor, video_path, bbox_json_path, ROSTER_JSON, device=device)
     # print(results)

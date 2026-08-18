@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
+from settings import SETTINGS
 from src.dataset import VideoBagClipsDataset, bag_collate_fn, LABEL_MAP
 from src.model import PlayerEventModel
 
@@ -144,9 +145,27 @@ def parse_args():
     p.add_argument("--fps_out", type=int, default=4)
     p.add_argument("--img_size", type=int, default=224)
     p.add_argument("--rebuild_cache", action="store_true")
-    p.add_argument("--bbox_dir", type=str, required=True)
-    p.add_argument("--video_dir", type=str, required=True)
-    p.add_argument("--cache_dir", type=str, required=True)
+    p.add_argument(
+        "--bbox_dir",
+        type=str,
+        default=str(SETTINGS.train_annotations_dir),
+    )
+    p.add_argument(
+        "--video_dir",
+        type=str,
+        default=str(SETTINGS.videos_dir),
+    )
+    p.add_argument(
+        "--cache_dir",
+        type=str,
+        default=str(SETTINGS.cache_dir),
+    )
+    p.add_argument(
+        "--timesformer_model",
+        type=str,
+        default=str(SETTINGS.timesformer_model),
+        help="Path to the local TimeSformer model directory.",
+    )
 
     # train
     p.add_argument("--epochs", type=int, default=10)
@@ -161,7 +180,11 @@ def parse_args():
     p.add_argument("--clip_soft_tau", type=float, default=0.5)
 
     # io
-    p.add_argument("--save_dir", type=str, required=True)
+    p.add_argument(
+        "--save_dir",
+        type=str,
+        default=str(SETTINGS.trained_checkpoints_dir),
+    )
 
     # resume
     p.add_argument("--resume", action="store_true")
@@ -172,6 +195,20 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    args.bbox_dir = str(
+        SETTINGS.require_directory(args.bbox_dir, "Training annotation directory")
+    )
+    args.video_dir = str(
+        SETTINGS.require_directory(args.video_dir, "Runtime video directory")
+    )
+    args.timesformer_model = str(
+        SETTINGS.require_directory(
+            args.timesformer_model,
+            "TimeSformer model directory",
+        )
+    )
+    SETTINGS.create_directories([args.cache_dir, args.save_dir])
 
     rank, world_size, local_rank, device = setup_ddp()
     seed_everything(args.seed, rank)
@@ -226,6 +263,8 @@ def main():
     num_classes = len(LABEL_MAP)
     model = PlayerEventModel(
         num_classes=num_classes,
+        pretrained_name=args.timesformer_model,
+        local_files_only=SETTINGS.hf_local_files_only,
         roi_out_size=(1, 1),
         use_clip_relation=True,
         use_actor_global=True,

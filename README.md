@@ -208,7 +208,12 @@ CLIP=100
 
 python track_one_video.py \
   --video_path "/home/fangzilin/data/basket/$GAME/video/$CLIP.mp4" \
-  --json_save_path "/home/fangzilin/data/basket_artifacts/$GAME/tracks/raw/$CLIP.json"
+  --json_save_path "/home/fangzilin/data/basket_artifacts/$GAME/tracks/raw/$CLIP.json" \
+  --gpus_to_use "0" \
+  --offload-video-to-cpu \
+  --offload-state-to-cpu \
+  --max-num-objects 10 \
+  --max-ball-objects 2
 
 python recognize.py \
   --video_path "/home/fangzilin/data/basket/$GAME/video/$CLIP.mp4" \

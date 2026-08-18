@@ -195,18 +195,20 @@ def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
     return outputs_per_frame
 
 
-def configure_object_limit(predictor, max_num_objects, gpu_count):
-    """Limit the number of SAM3 masklets tracked by a single-GPU predictor.
+def configure_object_limit(predictor, max_num_objects, gpu_count, prompt_name):
+    """Limit SAM3 masklets and the corresponding compiled object slots.
 
     SAM3 treats a non-positive model limit as effectively unlimited and expands
-    it to 10,000 objects.  Basketball clips have at most ten on-court players,
-    so a small explicit limit prevents false detections from growing the
-    attention tensors until the GPU runs out of memory.
+    it to 10,000 objects while reserving 16 object slots for optional compile
+    warm-up. ``max_num_objects`` limits the active masklet batch that drives
+    eager-mode attention memory. ``num_obj_for_compile`` is kept equal so a
+    future compiled run warms only the same supported object-count range.
 
     Args:
         predictor: Initialized ``Sam3VideoPredictorMultiGPU`` instance.
         max_num_objects: Positive maximum number of simultaneous masklets.
         gpu_count: Number of GPUs assigned to the predictor.
+        prompt_name: Human-readable prompt label used in runtime diagnostics.
 
     Raises:
         ValueError: If the limit is not positive or multiple GPUs are used.
@@ -221,13 +223,22 @@ def configure_object_limit(predictor, max_num_objects, gpu_count):
         )
 
     model = getattr(predictor, "model", None)
-    if model is None or not hasattr(model, "max_num_objects"):
+    required_attributes = ("max_num_objects", "num_obj_for_compile")
+    if model is None or any(
+        not hasattr(model, attribute) for attribute in required_attributes
+    ):
         raise RuntimeError(
-            "The installed SAM3 video model does not expose max_num_objects"
+            "The installed SAM3 video model does not expose both "
+            "max_num_objects and num_obj_for_compile"
         )
 
     model.max_num_objects = max_num_objects
-    print(f"SAM3 object limit: max_num_objects={max_num_objects}")
+    model.num_obj_for_compile = max_num_objects
+    print(
+        f"SAM3 object limits ({prompt_name}): "
+        f"max_num_objects={model.max_num_objects}, "
+        f"num_obj_for_compile={model.num_obj_for_compile}"
+    )
 
 
 def parse_args():
@@ -290,11 +301,21 @@ def parse_args():
     parser.add_argument(
         "--max-num-objects",
         type=int,
-        default=16,
+        default=10,
         help=(
-            "Maximum number of simultaneous SAM3 masklets. The basketball "
-            "pipeline defaults to 16 instead of SAM3's effectively unlimited "
-            "10,000-object fallback to control attention memory. Single GPU only."
+            "Maximum simultaneous player masklets and compiled object slots. "
+            "The default of 10 matches the number of on-court players and "
+            "reduces attention memory on pre-Ampere GPUs. Single GPU only."
+        ),
+    )
+    parser.add_argument(
+        "--max-ball-objects",
+        type=int,
+        default=2,
+        help=(
+            "Maximum simultaneous basketball masklets and compiled object "
+            "slots after the player session is reset. Defaults to 2 to allow "
+            "one false positive without using the player-sized batch."
         ),
     )
     return parser.parse_args()
@@ -311,6 +332,8 @@ def main():
     # cannot leave spawned SAM3 worker processes behind.
     if args.max_num_objects <= 0:
         raise ValueError("--max-num-objects must be a positive integer")
+    if args.max_ball_objects <= 0:
+        raise ValueError("--max-ball-objects must be a positive integer")
     if len(gpus_to_use) != 1:
         raise ValueError(
             "Object limiting currently requires exactly one GPU; pass "
@@ -333,6 +356,7 @@ def main():
         predictor,
         max_num_objects=args.max_num_objects,
         gpu_count=len(gpus_to_use),
+        prompt_name="players",
     )
 
     print(
@@ -360,6 +384,15 @@ def main():
             frame_index=0,
         )
 
+        # Player outputs are already materialized as NumPy arrays. The next
+        # ``run_text_prompt`` reset can therefore clear tracker state and use a
+        # much smaller compiled batch for basketball candidates.
+        configure_object_limit(
+            predictor,
+            max_num_objects=args.max_ball_objects,
+            gpu_count=len(gpus_to_use),
+            prompt_name="basketball",
+        )
         ball_outputs = run_text_prompt(
             predictor,
             session_id,

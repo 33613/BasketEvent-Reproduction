@@ -1,3 +1,10 @@
+"""Track basketball players and balls in one video with local SAM3.
+
+The entry point supports optional CPU offloading for video frames and SAM3
+inference state.  CPU offloading is useful on pre-Ampere GPUs, where Flash
+Attention is unavailable and long clips can otherwise exhaust GPU memory.
+"""
+
 import os
 import json
 import argparse
@@ -11,6 +18,15 @@ import gc
 from settings import SETTINGS
 
 def mask_to_bbox(mask: np.ndarray):
+    """Convert a binary mask to an ``[x, y, width, height]`` box.
+
+    Args:
+        mask: Two-dimensional binary or score mask.
+
+    Returns:
+        The smallest integer bounding box containing nonzero pixels, or
+        ``None`` when the mask is empty.
+    """
     ys, xs = np.where(mask > 0)
     if len(xs) == 0:
         return None
@@ -24,6 +40,15 @@ def mask_to_bbox(mask: np.ndarray):
 
 
 def get_frame_dict(outputs_per_frame, frame_idx):
+    """Return one frame output while accepting integer or string JSON keys.
+
+    Args:
+        outputs_per_frame: Mapping from frame identifiers to object masks.
+        frame_idx: Zero-based frame index.
+
+    Returns:
+        Object-mask mapping for the requested frame, or an empty mapping.
+    """
     if frame_idx in outputs_per_frame:
         return outputs_per_frame[frame_idx]
     if str(frame_idx) in outputs_per_frame:
@@ -32,6 +57,14 @@ def get_frame_dict(outputs_per_frame, frame_idx):
 
 
 def collect_object_ids(outputs_per_frame):
+    """Collect and numerically sort every object ID in frame outputs.
+
+    Args:
+        outputs_per_frame: Mapping from frame identifiers to object masks.
+
+    Returns:
+        Sorted integer object identifiers.
+    """
     obj_ids = set()
     for _, obj_dict in outputs_per_frame.items():
         obj_ids.update(obj_dict.keys())
@@ -39,21 +72,17 @@ def collect_object_ids(outputs_per_frame):
 
 
 def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=None):
-    """
-    Output format:
-    {
-        "player_0": {
-            "trajectory": [bbox_or_None, bbox_or_None, ...]
-        },
-        "player_1": {
-            "trajectory": [...]
-        },
-        "ball_1": {
-            "trajectory": [...]
-        }
-    }
+    """Convert SAM3 player and ball masks into trajectory JSON.
 
-    bbox format: [x, y, w, h]
+    Args:
+        player_outputs: Per-frame masks produced by the player text prompt.
+        ball_outputs: Per-frame masks produced by the basketball text prompt.
+        json_path: Destination JSON path.
+        num_frames: Optional authoritative frame count. When omitted, the
+            largest observed frame index determines the count.
+
+    The output maps ``player_N`` and ``ball_N`` IDs to trajectories whose
+    entries are ``[x, y, width, height]`` boxes or ``None``.
     """
 
     player_ids = collect_object_ids(player_outputs)
@@ -116,6 +145,15 @@ def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=No
 
 
 def propagate_in_video(predictor, session_id):
+    """Collect streamed SAM3 propagation responses for one session.
+
+    Args:
+        predictor: SAM3 video predictor instance.
+        session_id: Active SAM3 session identifier.
+
+    Returns:
+        Mapping from frame indices to raw SAM3 outputs.
+    """
     outputs_per_frame = {}
     for response in predictor.handle_stream_request(
         request=dict(type="propagate_in_video", session_id=session_id)
@@ -124,6 +162,17 @@ def propagate_in_video(predictor, session_id):
     return outputs_per_frame
 
 def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
+    """Reset a session and propagate one text prompt through the video.
+
+    Args:
+        predictor: SAM3 video predictor instance.
+        session_id: Active SAM3 session identifier.
+        prompt_text: Open-vocabulary object description.
+        frame_index: Frame on which the prompt is introduced.
+
+    Returns:
+        Per-frame masks prepared as NumPy arrays for trajectory conversion.
+    """
     predictor.handle_request(
         request=dict(
             type="reset_session",
@@ -146,6 +195,11 @@ def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
     return outputs_per_frame
 
 def parse_args():
+    """Parse command-line options for SAM3 tracking.
+
+    Returns:
+        Parsed command-line namespace.
+    """
     parser = argparse.ArgumentParser(
         description="Run SAM3 video segmentation and export bbox jsons"
     )
@@ -179,10 +233,29 @@ def parse_args():
         default=str(SETTINGS.sam3_bpe),
         help="Path to the SAM3 BPE vocabulary.",
     )
+    parser.add_argument(
+        "--offload-video-to-cpu",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Store decoded and resized video frames in CPU memory instead of "
+            "GPU memory. Recommended for long clips on memory-limited GPUs."
+        ),
+    )
+    parser.add_argument(
+        "--offload-state-to-cpu",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Store reusable SAM3 inference state in CPU memory. This saves "
+            "additional GPU memory at the cost of lower tracking throughput."
+        ),
+    )
     return parser.parse_args()
 
 
 def main():
+    """Run SAM3 tracking and write raw player and ball trajectories."""
     args = parse_args()
     gpus_to_use = [int(x) for x in args.gpus_to_use.split(",")]
     video_path = args.video_path
@@ -201,10 +274,21 @@ def main():
         gpus_to_use=gpus_to_use,
     )
 
+    print(
+        "SAM3 CPU offload: "
+        f"video={args.offload_video_to_cpu}, "
+        f"state={args.offload_state_to_cpu}"
+    )
+
     session_id = None
     try:
         response = predictor.handle_request(
-            request=dict(type="start_session", resource_path=video_path)
+            request=dict(
+                type="start_session",
+                resource_path=video_path,
+                offload_video_to_cpu=args.offload_video_to_cpu,
+                offload_state_to_cpu=args.offload_state_to_cpu,
+            )
         )
         session_id = response["session_id"]
 
@@ -228,12 +312,14 @@ def main():
             json_path=json_save_path,
         )
 
-    except RuntimeError as e:
-        err_msg = str(e).lower()
-        if "out of memory" in err_msg or "cuda" in err_msg:
+    except RuntimeError as error:
+        err_msg = str(error).lower()
+        if isinstance(error, torch.OutOfMemoryError) or "out of memory" in err_msg:
             print(f"[OOM] skip video due to CUDA OOM: {video_path}")
         else:
-            print(f"[ERROR] skip video {video_path}: {e}")
+            print(f"[ERROR] failed to process video {video_path}: {error}")
+        # A missing output must never be reported to batch runners as success.
+        raise
 
     finally:
         # 一定要 close session

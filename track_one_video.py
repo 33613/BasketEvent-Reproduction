@@ -194,6 +194,42 @@ def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
 
     return outputs_per_frame
 
+
+def configure_object_limit(predictor, max_num_objects, gpu_count):
+    """Limit the number of SAM3 masklets tracked by a single-GPU predictor.
+
+    SAM3 treats a non-positive model limit as effectively unlimited and expands
+    it to 10,000 objects.  Basketball clips have at most ten on-court players,
+    so a small explicit limit prevents false detections from growing the
+    attention tensors until the GPU runs out of memory.
+
+    Args:
+        predictor: Initialized ``Sam3VideoPredictorMultiGPU`` instance.
+        max_num_objects: Positive maximum number of simultaneous masklets.
+        gpu_count: Number of GPUs assigned to the predictor.
+
+    Raises:
+        ValueError: If the limit is not positive or multiple GPUs are used.
+        RuntimeError: If the installed SAM3 model has no configurable limit.
+    """
+    if max_num_objects <= 0:
+        raise ValueError("--max-num-objects must be a positive integer")
+    if gpu_count != 1:
+        raise ValueError(
+            "--max-num-objects currently requires exactly one GPU because "
+            "worker-process model limits cannot be changed from the parent"
+        )
+
+    model = getattr(predictor, "model", None)
+    if model is None or not hasattr(model, "max_num_objects"):
+        raise RuntimeError(
+            "The installed SAM3 video model does not expose max_num_objects"
+        )
+
+    model.max_num_objects = max_num_objects
+    print(f"SAM3 object limit: max_num_objects={max_num_objects}")
+
+
 def parse_args():
     """Parse command-line options for SAM3 tracking.
 
@@ -251,6 +287,16 @@ def parse_args():
             "additional GPU memory at the cost of lower tracking throughput."
         ),
     )
+    parser.add_argument(
+        "--max-num-objects",
+        type=int,
+        default=16,
+        help=(
+            "Maximum number of simultaneous SAM3 masklets. The basketball "
+            "pipeline defaults to 16 instead of SAM3's effectively unlimited "
+            "10,000-object fallback to control attention memory. Single GPU only."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -260,6 +306,16 @@ def main():
     gpus_to_use = [int(x) for x in args.gpus_to_use.split(",")]
     video_path = args.video_path
     json_save_path = args.json_save_path
+
+    # Validate before model construction so an invalid multi-GPU invocation
+    # cannot leave spawned SAM3 worker processes behind.
+    if args.max_num_objects <= 0:
+        raise ValueError("--max-num-objects must be a positive integer")
+    if len(gpus_to_use) != 1:
+        raise ValueError(
+            "Object limiting currently requires exactly one GPU; pass "
+            "--gpus_to_use with one device such as '0'"
+        )
 
     video_path = str(SETTINGS.require_file(video_path, "Input video"))
     sam3_checkpoint = str(
@@ -272,6 +328,11 @@ def main():
         checkpoint_path=sam3_checkpoint,
         bpe_path=sam3_bpe,
         gpus_to_use=gpus_to_use,
+    )
+    configure_object_limit(
+        predictor,
+        max_num_objects=args.max_num_objects,
+        gpu_count=len(gpus_to_use),
     )
 
     print(

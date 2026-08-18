@@ -14,7 +14,8 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from settings import SETTINGS
-from src.dataset import load_ball_from_json_resized, load_bbox_from_json_resized_onepid, LABEL_MAP
+from src.dataset import load_ball_from_json_resized, load_bbox_from_json_resized_onepid
+from src.labels import LABEL_MAP
 from src.model import PlayerEventModel
 
 REVERSE_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}

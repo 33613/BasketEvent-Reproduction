@@ -172,6 +172,54 @@ class Settings:
         """Return the default directory for newly trained checkpoints."""
         return self.model_root / "basketevent-trained"
 
+    @property
+    def split_config(self) -> Path:
+        """Return the game-level train/validation/test split definition."""
+        return self.artifacts_root / "split_config.json"
+
+    @property
+    def annotation_summary(self) -> Path:
+        """Return the latest BARD annotation-build summary path."""
+        return self.artifacts_root / "annotation_build_summary.json"
+
+    @property
+    def roster_summary(self) -> Path:
+        """Return the latest BARD roster-conversion summary path."""
+        return self.artifacts_root / "roster_build_summary.json"
+
+    def game_artifacts_dir(self, bard_game: str) -> Path:
+        """Return the reusable artifact directory for one BARD game.
+
+        Args:
+            bard_game: BARD folder name, for example
+                ``bkn-vs-det-0022400861``.
+
+        Returns:
+            Directory that groups metadata, trajectories, annotations, and
+            reports belonging to the game.
+        """
+        return self.artifacts_root / bard_game
+
+    def raw_tracks_dir(self, bard_game: str) -> Path:
+        """Return the SAM3 raw-trajectory directory for one BARD game."""
+        return self.game_artifacts_dir(bard_game) / "tracks" / "raw"
+
+    def clean_tracks_dir(self, bard_game: str) -> Path:
+        """Return the Qwen-cleaned trajectory directory for one BARD game."""
+        return self.game_artifacts_dir(bard_game) / "tracks" / "clean"
+
+    def annotations_dir(self, bard_game: str) -> Path:
+        """Return accepted BasketEvent annotations for one BARD game."""
+        return self.game_artifacts_dir(bard_game) / "annotations"
+
+    def annotation_reports_dir(self, bard_game: str) -> Path:
+        """Return per-clip label-mapping and anomaly reports for one game."""
+        return self.game_artifacts_dir(bard_game) / "reports"
+
+    def game_metadata_dir(self, bard_game: str) -> Path:
+        """Return generated roster and other game-level metadata paths."""
+        return self.game_artifacts_dir(bard_game) / "metadata"
+
     def require_file(self, path: str | Path, description: str) -> Path:
         """Validate and return a required file path.
 

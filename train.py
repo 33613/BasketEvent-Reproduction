@@ -16,7 +16,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
 from settings import SETTINGS
-from src.dataset import VideoBagClipsDataset, bag_collate_fn, LABEL_MAP
+from src.dataset import VideoBagClipsDataset, bag_collate_fn
+from src.labels import LABEL_MAP
 from src.model import PlayerEventModel
 
 

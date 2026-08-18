@@ -7,10 +7,9 @@ The script keeps two data layouts separate:
    roster information.  It does not invent BasketEvent labels.
 2. ``repair-manifest`` rebuilds the lightweight clip index after folders are
    renamed or moved.  It scans file names only and never decodes video data.
-3. ``export`` converts completed staging games to the directory layout read by
-   ``BasketEvent/src/dataset.py``.  A completed ``label/<clip>.json`` must be a
-   full BasketEvent annotation containing trajectories, recognized players,
-   and the mapped event, rather than a scalar class label.
+3. ``export`` converts accepted annotations from
+   ``<artifacts>/<game>/annotations`` to the directory layout read by
+   ``BasketEvent/src/dataset.py``. Source BARD folders remain read-only.
 
 The ``make-split`` command assigns whole games to train/valid/test.  Splitting
 by game prevents clips from the same game from leaking across data splits.
@@ -26,6 +25,7 @@ import os
 import random
 import re
 import shutil
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -33,8 +33,15 @@ from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from settings import SETTINGS  # noqa: E402
+
+
 HF_REPO = "GabrieleGiudici/BARD"
-DEFAULT_WORKSPACE_ROOT = Path(r"D:\数据集\basket")
+DEFAULT_WORKSPACE_ROOT = SETTINGS.data_root
 METADATA_FILES = (
     "dataset.csv",
     "dataset_paths.csv",
@@ -153,7 +160,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     make_split.add_argument(
         "--output",
         type=Path,
-        help="Output JSON; defaults to <workspace>/split_config.json.",
+        default=SETTINGS.split_config,
+        help="Output JSON; defaults to Settings.split_config.",
+    )
+    make_split.add_argument(
+        "--annotations-root",
+        type=Path,
+        default=SETTINGS.artifacts_root,
+        help=(
+            "Artifact root containing <game>/annotations/*.json. Only games "
+            "with accepted Scheme-A annotations are split."
+        ),
     )
     make_split.add_argument("--train-ratio", type=float, default=0.8)
     make_split.add_argument("--valid-ratio", type=float, default=0.1)
@@ -169,13 +186,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     export.add_argument(
         "--runtime-root",
         type=Path,
-        required=True,
+        default=SETTINGS.runtime_root,
         help="Destination containing videos/, train/, valid/, and test/.",
+    )
+    export.add_argument(
+        "--annotations-root",
+        type=Path,
+        default=SETTINGS.artifacts_root,
+        help="Artifact root containing accepted <game>/annotations/*.json.",
     )
     export.add_argument(
         "--split-file",
         type=Path,
-        help="Game-level split JSON; defaults to <workspace>/split_config.json.",
+        default=SETTINGS.split_config,
+        help="Game-level split JSON; defaults to Settings.split_config.",
     )
     export.add_argument(
         "--materialize", choices=("hardlink", "copy"), default="hardlink"
@@ -183,7 +207,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     export.add_argument(
         "--allow-missing-annotations",
         action="store_true",
-        help="Export videos while reporting absent label/<clip>.json files.",
+        help=(
+            "Skip and report clips excluded by Scheme A. Without this flag, "
+            "the first missing accepted annotation stops export."
+        ),
     )
     export.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -575,7 +602,7 @@ def ensure_staging_layout(game_root: Path) -> dict[str, Path]:
         game_root: Staging directory for one BARD game.
 
     Returns:
-        Named paths for video, descriptions, roster, and future annotations.
+        Named paths for source videos, descriptions, and roster metadata.
     """
     paths = {
         "video": game_root / "video",
@@ -583,7 +610,6 @@ def ensure_staging_layout(game_root: Path) -> dict[str, Path]:
         "action": game_root / "description" / "action",
         "caption": game_root / "description" / "GT caption",
         "players": game_root / "description" / "players",
-        "label": game_root / "label",
     }
     for path in paths.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -788,6 +814,26 @@ def discover_staging_games(workspace_root: Path) -> list[str]:
     )
 
 
+def discover_annotated_games(
+    games: Sequence[str], annotations_root: Path
+) -> list[str]:
+    """Keep only games with at least one accepted Scheme-A annotation.
+
+    Args:
+        games: Staged BARD game folders.
+        annotations_root: Artifact root populated by
+            ``build_bard_annotations.py labels``.
+
+    Returns:
+        Sorted game names with at least one ``annotations/*.json`` file.
+    """
+    return sorted(
+        game
+        for game in games
+        if any((annotations_root / game / "annotations").glob("*.json"))
+    )
+
+
 def repair_game_manifest(game_root: Path, dry_run: bool) -> dict[str, Any]:
     """Rebuild one game's manifest without reading video contents.
 
@@ -950,6 +996,7 @@ def extract_game_id(game: str) -> str:
 
 def export_runtime(
     workspace_root: Path,
+    annotations_root: Path,
     runtime_root: Path,
     splits: dict[str, list[str]],
     materialize: str,
@@ -960,6 +1007,7 @@ def export_runtime(
 
     Args:
         workspace_root: Human-readable BARD staging root.
+        annotations_root: Artifact root containing accepted annotations.
         runtime_root: Destination containing videos/train/valid/test.
         splits: Game-level split assignment.
         materialize: File materialization mode.
@@ -976,6 +1024,7 @@ def export_runtime(
     summary: dict[str, Any] = {
         "schema_version": "basketevent_runtime_export.v1",
         "workspace_root": str(workspace_root.resolve()),
+        "annotations_root": str(annotations_root.resolve()),
         "runtime_root": str(runtime_root.resolve()),
         "dry_run": dry_run,
         "splits": {},
@@ -1000,7 +1049,12 @@ def export_runtime(
             if not videos:
                 raise FileNotFoundError(f"No MP4 files found in: {video_dir}")
             for video in videos:
-                annotation = game_root / "label" / f"{video.stem}.json"
+                annotation = (
+                    annotations_root
+                    / game
+                    / "annotations"
+                    / f"{video.stem}.json"
+                )
                 destination_video = runtime_root / "videos" / game_id / video.name
                 destination_annotation = (
                     runtime_root / split / game_id / f"{video.stem}.json"
@@ -1011,30 +1065,37 @@ def export_runtime(
                         raise FileNotFoundError(
                             f"Missing final BasketEvent annotation: {annotation}"
                         )
+                    manifest_rows.append(
+                        {
+                            "status": "skipped_missing_annotation",
+                            "split": split,
+                            "bard_game": game,
+                            "game_id": game_id,
+                            "video_name": video.stem,
+                            "source_video": str(video),
+                            "source_annotation": None,
+                            "video": None,
+                            "annotation": None,
+                        }
+                    )
+                    split_clips += 1
+                    continue
                 if not dry_run:
                     materialize_file(video, destination_video, materialize)
-                    if annotation.is_file():
-                        materialize_file(
-                            annotation, destination_annotation, materialize
-                        )
-                    else:
-                        # Empty split/game directories make the incomplete state
-                        # visible without fabricating an annotation JSON.
-                        destination_annotation.parent.mkdir(
-                            parents=True, exist_ok=True
-                        )
+                    materialize_file(
+                        annotation, destination_annotation, materialize
+                    )
                 manifest_rows.append(
                     {
+                        "status": "exported",
                         "split": split,
                         "bard_game": game,
                         "game_id": game_id,
                         "video_name": video.stem,
+                        "source_video": str(video),
+                        "source_annotation": str(annotation),
                         "video": str(destination_video),
-                        "annotation": (
-                            str(destination_annotation)
-                            if annotation.is_file()
-                            else None
-                        ),
+                        "annotation": str(destination_annotation),
                     }
                 )
                 split_clips += 1
@@ -1134,8 +1195,8 @@ def run_prepare(args: argparse.Namespace) -> None:
         "selected_game_count": len(selected_games),
         "games": results,
         "important": (
-            "label/<clip>.json is intentionally not generated. It must later "
-            "contain SAM3/Qwen trajectories and a mapped BasketEvent event."
+            "The BARD staging tree is source data. Generated trajectories, "
+            "annotations, and reports belong under Settings.artifacts_root."
         ),
     }
     if not args.dry_run:
@@ -1181,11 +1242,21 @@ def run_make_split(args: argparse.Namespace) -> None:
         args: Parsed split-generation arguments.
     """
     workspace_root = args.workspace_root.resolve()
-    output = (args.output or workspace_root / "split_config.json").resolve()
-    games = discover_staging_games(workspace_root)
+    annotations_root = args.annotations_root.resolve()
+    output = args.output.resolve()
+    staged_games = discover_staging_games(workspace_root)
+    games = discover_annotated_games(staged_games, annotations_root)
+    if not games:
+        raise FileNotFoundError(
+            "No accepted annotations were found under "
+            f"{annotations_root}/<game>/annotations. Run the fixed-rule label "
+            "builder after SAM3/Qwen track preparation."
+        )
     config = build_split_config(
         games, args.train_ratio, args.valid_ratio, args.seed
     )
+    config["annotations_root"] = str(annotations_root)
+    config["excluded_unannotated_games"] = sorted(set(staged_games) - set(games))
     if not args.dry_run:
         write_json(output, config)
     print(json.dumps(config, ensure_ascii=False, indent=2))
@@ -1198,7 +1269,7 @@ def run_export(args: argparse.Namespace) -> None:
         args: Parsed export arguments.
     """
     workspace_root = args.workspace_root.resolve()
-    split_file = (args.split_file or workspace_root / "split_config.json").resolve()
+    split_file = args.split_file.resolve()
     splits = load_split_config(split_file)
     staged_games = set(discover_staging_games(workspace_root))
     configured_games = {
@@ -1209,6 +1280,7 @@ def run_export(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Split file references unstaged games: {unknown}")
     summary = export_runtime(
         workspace_root=workspace_root,
+        annotations_root=args.annotations_root.resolve(),
         runtime_root=args.runtime_root.resolve(),
         splits=splits,
         materialize=args.materialize,

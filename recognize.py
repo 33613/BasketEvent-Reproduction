@@ -153,13 +153,15 @@ Task (single pass):
    - Determine if the 10 crops mostly show a real on-court player wearing a team jersey.
    - If the crops mostly show a referee / audience / bench / staff / irrelevant content, mark it as invalid.
 2) If valid, determine:
-   - jersey_number (1–2 digits, 0–99) from the images,
+   - jersey_number as a 1–2 digit STRING from the images (for example "0", "00", or "23"),
    - jersey_color (choose only from colors present in the roster info),
    - then map (jersey_color, jersey_number) to a player_name using the roster table below.
 
 Rules:
 - Use cross-image consistency: not every crop is clear; ignore unreadable or irrelevant crops.
-- Only output a player_name if the ID is valid AND (jersey_color, jersey_number) matches the roster.
+- Preserve the visible spelling of a jersey number: "0" and "00" are different jerseys.
+- Only output a player_name if the ID is valid AND (jersey_color, jersey_number) matches exactly one roster row.
+- If multiple roster names share the same jersey color and number, return player_name as null instead of guessing.
 - If jersey number/color cannot be determined reliably, return player_name as null.
 - NEVER output a name that is not present in the roster.
 - If invalid, set jersey_number, jersey_color, and player_name to null.
@@ -172,7 +174,7 @@ Return STRICT JSON only (no extra text):
 {{
   "is_valid_player": true/false,
   "invalid_reason": "<short reason or null>",
-  "jersey_number": <number or null>,
+  "jersey_number": "<1-2 digit string or null>",
   "jersey_color": "<color or null>",
   "player_name": "<name or null>",
   "confidence": "low|medium|high",

@@ -7,6 +7,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision.io import read_video
 import torch.nn.functional as F
 
+from src.labels import LABEL_MAP
+
 # -------------------------
 # cache utils
 # -------------------------
@@ -22,20 +24,6 @@ def load_index_cache(path: str) -> Optional[Any]:
         return None
     with open(path, "rb") as f:
         return pickle.load(f)
-
-LABEL_MAP = {
-   "blank": 0,
-   "Missed Shot": 1,
-   "Made Shot": 2,
-   "Free Throw": 3,
-   "Foul": 4,
-   "Turnover": 5,
-   "Jump Ball": 6,
-   "Rebound": 7,
-   "steal": 8,
-   "block": 9,
-   "ast": 10
-}
 
 # -------------------------
 # helpers: bbox loader (single pid) with resize

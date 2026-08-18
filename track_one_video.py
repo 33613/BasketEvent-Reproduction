@@ -17,6 +17,7 @@ import gc
 
 from settings import SETTINGS
 
+
 def mask_to_bbox(mask: np.ndarray):
     """Convert a binary mask to an ``[x, y, width, height]`` box.
 
@@ -116,9 +117,7 @@ def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=No
             bbox = mask_to_bbox(mask) if mask is not None else None
             trajectory.append(bbox)
 
-        result[object_name] = {
-            "trajectory": trajectory
-        }
+        result[object_name] = {"trajectory": trajectory}
 
     # 2. 保存 ball trajectory
     # 这里把 ball 命名为 ball_1, ball_2, ...
@@ -136,9 +135,7 @@ def build_trajectory_json(player_outputs, ball_outputs, json_path, num_frames=No
             bbox = mask_to_bbox(mask) if mask is not None else None
             trajectory.append(bbox)
 
-        result[object_name] = {
-            "trajectory": trajectory
-        }
+        result[object_name] = {"trajectory": trajectory}
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
@@ -161,13 +158,93 @@ def propagate_in_video(predictor, session_id):
         outputs_per_frame[response["frame_index"]] = response["outputs"]
     return outputs_per_frame
 
-def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
+
+def prune_prompt_objects(
+    predictor,
+    session_id,
+    frame_index,
+    prompt_outputs,
+    max_objects,
+    prompt_name,
+):
+    """Remove low-confidence objects created by the initial text prompt.
+
+    SAM3 applies ``max_num_objects`` when associating new detections during
+    propagation, but the first ``add_prompt`` call can seed more objects before
+    that limit is consulted. Those initial objects form the tracker attention
+    batch, so they must be pruned explicitly on memory-limited GPUs.
+
+    Args:
+        predictor: SAM3 video predictor instance.
+        session_id: Active SAM3 session identifier.
+        frame_index: Frame on which the prompt was introduced.
+        prompt_outputs: Output dictionary returned by ``add_prompt``.
+        max_objects: Maximum number of prompt objects to keep.
+        prompt_name: Human-readable prompt label used in diagnostics.
+
+    Returns:
+        Kept object IDs ordered by descending prompt confidence.
+
+    Raises:
+        RuntimeError: If SAM3 returns object IDs without matching confidence
+            scores, making deterministic pruning impossible.
+    """
+    object_ids = np.asarray(prompt_outputs.get("out_obj_ids", [])).reshape(-1)
+    probabilities = np.asarray(prompt_outputs.get("out_probs", [])).reshape(-1)
+
+    if object_ids.size == 0:
+        print(f"SAM3 prompt candidates ({prompt_name}): detected=0, kept=0")
+        return []
+    if probabilities.size != object_ids.size:
+        raise RuntimeError(
+            f"SAM3 returned {object_ids.size} object IDs but "
+            f"{probabilities.size} confidence scores for {prompt_name}"
+        )
+
+    ranked_indices = np.argsort(-probabilities, kind="stable")
+    keep_indices = set(ranked_indices[:max_objects].tolist())
+    kept_object_ids = [int(object_ids[index]) for index in ranked_indices[:max_objects]]
+    removed_objects = []
+
+    for index, (object_id, probability) in enumerate(zip(object_ids, probabilities)):
+        if index in keep_indices:
+            continue
+        predictor.handle_request(
+            request=dict(
+                type="remove_object",
+                session_id=session_id,
+                frame_index=frame_index,
+                obj_id=int(object_id),
+            )
+        )
+        removed_objects.append(
+            {"object_id": int(object_id), "score": float(probability)}
+        )
+
+    print(
+        f"SAM3 prompt candidates ({prompt_name}): "
+        f"detected={object_ids.size}, kept={len(kept_object_ids)}, "
+        f"removed={removed_objects}"
+    )
+    return kept_object_ids
+
+
+def run_text_prompt(
+    predictor,
+    session_id,
+    prompt_text,
+    max_objects,
+    prompt_name,
+    frame_index=0,
+):
     """Reset a session and propagate one text prompt through the video.
 
     Args:
         predictor: SAM3 video predictor instance.
         session_id: Active SAM3 session identifier.
         prompt_text: Open-vocabulary object description.
+        max_objects: Maximum number of initial prompt objects to retain.
+        prompt_name: Human-readable prompt label used in diagnostics.
         frame_index: Frame on which the prompt is introduced.
 
     Returns:
@@ -180,13 +257,21 @@ def run_text_prompt(predictor, session_id, prompt_text, frame_index=0):
         )
     )
 
-    predictor.handle_request(
+    prompt_response = predictor.handle_request(
         request=dict(
             type="add_prompt",
             session_id=session_id,
             frame_index=frame_index,
             text=prompt_text,
         )
+    )
+    prune_prompt_objects(
+        predictor=predictor,
+        session_id=session_id,
+        frame_index=frame_index,
+        prompt_outputs=prompt_response["outputs"],
+        max_objects=max_objects,
+        prompt_name=prompt_name,
     )
 
     outputs_per_frame = propagate_in_video(predictor, session_id)
@@ -381,6 +466,8 @@ def main():
             predictor,
             session_id,
             prompt_text="basketball player on the court",
+            max_objects=args.max_num_objects,
+            prompt_name="players",
             frame_index=0,
         )
 
@@ -397,6 +484,8 @@ def main():
             predictor,
             session_id,
             prompt_text="basketball",
+            max_objects=args.max_ball_objects,
+            prompt_name="basketball",
             frame_index=0,
         )
 

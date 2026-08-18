@@ -222,6 +222,11 @@ python recognize.py \
   --roster_json "/home/fangzilin/data/basket_artifacts/$GAME/metadata/recognize_roster.json"
 ```
 
+On pre-Ampere GPUs, `track_one_video.py` ranks the objects returned by each
+initial text prompt and removes low-confidence candidates before propagation.
+The two object-limit flags above therefore control the retained player and ball
+tracker batches, rather than only limiting detections added on later frames.
+
 Generate the fixed-rule annotation and inspect its report:
 
 ```bash

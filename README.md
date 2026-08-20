@@ -224,6 +224,28 @@ python recognize.py \
   --roster_json "/home/fangzilin/data/basket_artifacts/$GAME/metadata/recognize_roster.json"
 ```
 
+The recommended server entry point now runs SAM3, Qwen, PlayNet, and the
+diagnostic visualization with the same paths and memory-safe defaults:
+
+```bash
+source /home/fangzilin/tools/miniconda3/etc/profile.d/conda.sh
+conda activate /home/fangzilin/envs/basketevent
+cd /home/fangzilin/project/BasketEvent
+
+python -u local_script/process_one_video.py \
+  --game bkn-vs-det-0022400861 \
+  --clip 130
+```
+
+The runner sets `PYTHONNOUSERSITE=1` and `TOKENIZERS_PARALLELISM=false` for
+every child process, creates all output directories, and reuses non-empty
+intermediate files after an interruption. Use
+`--start-at qwen --no-resume` to retry Qwen without repeating SAM3, or
+`--start-at visualize --no-resume` to regenerate an overlay after visualization
+code changes. A per-clip status report is written
+to `basket_artifacts/{game}/reports/{clip}_pipeline.json`. If Qwen retains no
+players, PlayNet is skipped and a SAM3/Qwen diagnostic overlay is still made.
+
 Render all raw SAM3 candidates together with Qwen's retained jersey numbers
 before generating labels. Green player boxes were retained by Qwen, orange player
 boxes were rejected, yellow is the selected basketball, and gray boxes are
@@ -247,7 +269,9 @@ is diagnostic and intentionally has no audio. The optional prediction JSON
 adds a bottom timeline: each colored segment is a sampled clip that most
 strongly supported a final non-background player event, and the white line is
 the current video time. These segments are model-evidence windows rather than
-manually supervised event boundaries.
+manually supervised event boundaries. The legend maps each color to a jersey
+number and predicted event; multiple evidence windows for the same pair always
+use the same color.
 
 On the two pre-Ampere TITAN RTX GPUs, `track_one_video.py` broadcasts each
 object limit to all SAM3 ranks, divides the tracker slots between the GPUs, and

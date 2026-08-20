@@ -4,11 +4,13 @@ import unittest
 
 from local_script.visualize_qwen_tracks import (
     active_temporal_events,
+    build_timeline_color_map,
     build_player_labels,
     event_display_label,
     match_clean_ball_to_raw,
     match_clean_tracks_to_raw,
     normalize_temporal_events,
+    temporal_event_identity,
 )
 
 
@@ -120,6 +122,40 @@ class QwenTrackVisualizationTest(unittest.TestCase):
         active = active_temporal_events(events, current_time=3.0)
         self.assertEqual(len(active), 1)
         self.assertEqual(event_display_label(active[0]), "#13 Made Shot 0.90")
+
+    def test_same_player_event_uses_one_timeline_color(self):
+        """Evidence windows for one player-event pair must share a color."""
+        events = [
+            {
+                "player_id": "player_0",
+                "jersey_number": "13",
+                "event": "Made Shot",
+                "start_time": 1.0,
+                "end_time": 2.0,
+            },
+            {
+                "player_id": "player_0",
+                "jersey_number": "13",
+                "event": "Made Shot",
+                "start_time": 3.0,
+                "end_time": 4.0,
+            },
+            {
+                "player_id": "player_1",
+                "jersey_number": "20",
+                "event": "Assist",
+                "start_time": 4.0,
+                "end_time": 5.0,
+            },
+        ]
+
+        color_map = build_timeline_color_map(events)
+
+        self.assertEqual(len(color_map), 2)
+        first_identity = temporal_event_identity(events[0])
+        second_identity = temporal_event_identity(events[1])
+        self.assertEqual(first_identity, second_identity)
+        self.assertEqual(color_map[first_identity], color_map[second_identity])
 
 
 if __name__ == "__main__":

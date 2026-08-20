@@ -215,6 +215,46 @@ def active_temporal_events(
     ]
 
 
+def temporal_event_identity(event: Mapping[str, Any]) -> tuple[str, str]:
+    """Return the stable player-and-event identity used for timeline colors.
+
+    Args:
+        event: Normalized temporal event dictionary.
+
+    Returns:
+        A player display identifier and event name. Jersey number is preferred
+        because it is what the overlay shows; the internal player ID is used
+        when no jersey number is available.
+    """
+    number = str(event.get("jersey_number") or "").strip()
+    player_id = str(event.get("player_id") or "unknown").strip()
+    player_label = f"#{number}" if number else player_id
+    event_name = str(event.get("event") or "Unknown event").strip()
+    return player_label, event_name
+
+
+def build_timeline_color_map(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, str], tuple[int, int, int]]:
+    """Assign one deterministic BGR color to each player-event identity.
+
+    Multiple evidence windows for the same player and predicted event receive
+    the same color. This avoids implying that every evidence window represents
+    a different event class.
+
+    Args:
+        events: Normalized temporal event dictionaries.
+
+    Returns:
+        Mapping from ``(player label, event name)`` to an OpenCV BGR color.
+    """
+    identities = sorted({temporal_event_identity(event) for event in events})
+    return {
+        identity: _TIMELINE_COLORS[index % len(_TIMELINE_COLORS)]
+        for index, identity in enumerate(identities)
+    }
+
+
 def trajectory_signature(payload: Mapping[str, Any]) -> str | None:
     """Return a stable signature for one non-empty trajectory.
 
@@ -486,7 +526,8 @@ def draw_event_timeline(
         return
 
     height, width = frame.shape[:2]
-    panel_height = min(112, max(76, height // 7))
+    color_map = build_timeline_color_map(events)
+    panel_height = min(136, max(104, height // 6))
     panel_top = height - panel_height
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, panel_top), (width - 1, height - 1), (15, 15, 15), -1)
@@ -494,7 +535,7 @@ def draw_event_timeline(
 
     left = 22
     right = max(left + 1, width - 22)
-    bar_top = panel_top + 42
+    bar_top = panel_top + 64
     bar_bottom = height - 18
     cv2.line(frame, (left, bar_bottom), (right, bar_bottom), (190, 190, 190), 2)
 
@@ -503,7 +544,7 @@ def draw_event_timeline(
         return int(round(left + ratio * (right - left)))
 
     for event_index, event in enumerate(events):
-        color = _TIMELINE_COLORS[event_index % len(_TIMELINE_COLORS)]
+        color = color_map[temporal_event_identity(event)]
         x1 = time_to_x(float(event["start_time"]))
         x2 = max(x1 + 3, time_to_x(float(event["end_time"])))
         lane = event_index % 3
@@ -529,6 +570,34 @@ def draw_event_timeline(
         1,
         cv2.LINE_AA,
     )
+
+    legend_x = left
+    legend_y = panel_top + 45
+    for identity, color in color_map.items():
+        player_label, event_name = identity
+        label = f"{player_label} {event_name}"
+        text_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.43, 1)
+        item_width = 16 + text_size[0] + 18
+        if legend_x + item_width > right:
+            break
+        cv2.rectangle(
+            frame,
+            (legend_x, legend_y - 9),
+            (legend_x + 11, legend_y + 2),
+            color,
+            -1,
+        )
+        cv2.putText(
+            frame,
+            label,
+            (legend_x + 16, legend_y + 1),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            _TEXT_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
+        legend_x += item_width
 
     active = active_temporal_events(events, current_time)
     if active:
@@ -606,6 +675,7 @@ def render_overlay(
         raw_tracks, clean_tracks
     )
     temporal_events, reported_duration = normalize_temporal_events(prediction_report)
+    timeline_color_map = build_timeline_color_map(temporal_events)
 
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -746,6 +816,14 @@ def render_overlay(
         "selected_raw_ball_track_id": selected_ball_id,
         "ball_match_diagnostic": ball_diagnostic,
         "temporal_event_count": len(temporal_events),
+        "timeline_legend": [
+            {
+                "player": identity[0],
+                "event": identity[1],
+                "color_bgr": list(color),
+            }
+            for identity, color in timeline_color_map.items()
+        ],
         "temporal_prediction_schema": (
             prediction_report.get("schema_version")
             if prediction_report is not None

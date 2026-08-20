@@ -241,8 +241,10 @@ The runner sets `PYTHONNOUSERSITE=1` and `TOKENIZERS_PARALLELISM=false` for
 every child process, creates all output directories, and reuses non-empty
 intermediate files after an interruption. Use
 `--start-at qwen --no-resume` to retry Qwen without repeating SAM3, or
-`--start-at visualize --no-resume` to regenerate an overlay after visualization
-code changes. A per-clip status report is written
+`--visualize-only --no-resume` to regenerate an overlay from existing raw/clean
+results without loading any model. When a prediction JSON exists, it is added
+to the overlay automatically; otherwise the output contains the trajectory
+diagnostics only. A per-clip status report is written
 to `basket_artifacts/{game}/reports/{clip}_pipeline.json`. If Qwen retains no
 players, PlayNet is skipped and a SAM3/Qwen diagnostic overlay is still made.
 

@@ -184,6 +184,8 @@ class PipelineConfig:
         timeline_topk: Evidence windows exported per predicted player-event.
         resume: Whether existing non-empty stage outputs may be reused.
         start_at: First stage to execute; earlier outputs must already exist.
+        visualize_only: Whether to render existing outputs without running any
+            model stage.
         dry_run: Whether commands are printed without execution.
     """
 
@@ -205,6 +207,7 @@ class PipelineConfig:
     timeline_topk: int = 2
     resume: bool = True
     start_at: str = "sam3"
+    visualize_only: bool = False
     dry_run: bool = False
 
     def __post_init__(self) -> None:
@@ -271,6 +274,8 @@ class SingleVideoPipeline:
 
     def _stage_enabled(self, stage: str) -> bool:
         """Return whether a stage is at or after the requested start stage."""
+        if self.config.visualize_only:
+            return stage == "visualize"
         return _STAGE_ORDER.index(stage) >= _STAGE_ORDER.index(self.config.start_at)
 
     def _child_environment(self) -> dict[str, str]:
@@ -353,9 +358,13 @@ class SingleVideoPipeline:
         """
         if not self._stage_enabled(stage):
             if not self._is_nonempty_file(output_path):
+                mode = (
+                    "--visualize-only"
+                    if self.config.visualize_only
+                    else f"--start-at {self.config.start_at}"
+                )
                 raise FileNotFoundError(
-                    f"--start-at {self.config.start_at} requires {stage} output: "
-                    f"{output_path}"
+                    f"{mode} requires {stage} output: {output_path}"
                 )
             self.report["stages"][stage] = {
                 "status": "existing_prerequisite",
@@ -530,7 +539,27 @@ class SingleVideoPipeline:
                 accepted_player_count = self._accepted_player_count()
             self.report["accepted_player_count"] = accepted_player_count
 
-            if accepted_player_count == 0:
+            if self.config.visualize_only:
+                include_prediction = (
+                    accepted_player_count != 0
+                    and self._is_nonempty_file(self.paths.prediction)
+                )
+                self.report["stages"]["playnet"] = {
+                    "status": "skipped",
+                    "reason": "Visualization-only mode",
+                }
+                self._reuse_or_run(
+                    "visualize",
+                    self.paths.visualization,
+                    self._visualization_command(include_prediction),
+                )
+                self.report["visualization_mode"] = (
+                    "tracks_and_events" if include_prediction else "tracks_only"
+                )
+                self.report["status"] = (
+                    "dry_run" if self.config.dry_run else "completed"
+                )
+            elif accepted_player_count == 0:
                 self.report["stages"]["playnet"] = {
                     "status": "skipped",
                     "reason": "Qwen retained no player trajectories",
@@ -626,6 +655,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print commands and write a report without loading any model.",
     )
+    parser.add_argument(
+        "--visualize-only",
+        action="store_true",
+        help=(
+            "Render an existing raw/clean result without loading SAM3, Qwen, "
+            "or PlayNet. An existing prediction JSON is added automatically."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -656,6 +693,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         timeline_topk=args.timeline_topk,
         resume=args.resume,
         start_at=args.start_at,
+        visualize_only=args.visualize_only,
         dry_run=args.dry_run,
     )
     SingleVideoPipeline(paths, config).run()

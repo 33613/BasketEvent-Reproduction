@@ -20,10 +20,12 @@ class RecordingPipeline(SingleVideoPipeline):
         """Initialize the pipeline and an executed-stage record."""
         super().__init__(paths, config)
         self.executed_stages: list[str] = []
+        self.executed_commands: list[list[str]] = []
 
     def _run_command(self, stage: str, command: Sequence[str]) -> None:
         """Record a stage and create the output expected by the orchestrator."""
         self.executed_stages.append(stage)
+        self.executed_commands.append([str(part) for part in command])
         self.report["stages"][stage] = {"status": "completed"}
         if stage == "visualize":
             self.paths.visualization.write_bytes(b"video")
@@ -116,6 +118,32 @@ class SingleVideoPipelineTest(unittest.TestCase):
             self.assertIn(str(paths.qwen_model), qwen_command)
             self.assertIn(str(paths.event_checkpoint), playnet_command)
             self.assertIn(str(paths.prediction), playnet_command)
+
+    def test_visualize_only_uses_existing_tracks_without_playnet(self):
+        """Processed tracks should render even when no prediction file exists."""
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._make_paths(Path(directory))
+            paths.create_output_directories()
+            paths.raw_tracks.write_text(
+                json.dumps({"player_0": {"trajectory": []}}), encoding="utf-8"
+            )
+            paths.clean_tracks.write_text(
+                json.dumps({"player_0": {"trajectory": []}}), encoding="utf-8"
+            )
+            pipeline = RecordingPipeline(
+                paths,
+                PipelineConfig(
+                    visualize_only=True,
+                    resume=False,
+                ),
+            )
+
+            report = pipeline.run()
+
+            self.assertEqual(pipeline.executed_stages, ["visualize"])
+            self.assertEqual(report["stages"]["playnet"]["status"], "skipped")
+            self.assertEqual(report["visualization_mode"], "tracks_only")
+            self.assertNotIn("--prediction_json_path", pipeline.executed_commands[0])
 
 
 if __name__ == "__main__":

@@ -3,9 +3,12 @@
 import unittest
 
 from local_script.visualize_qwen_tracks import (
+    active_temporal_events,
     build_player_labels,
+    event_display_label,
     match_clean_ball_to_raw,
     match_clean_tracks_to_raw,
+    normalize_temporal_events,
 )
 
 
@@ -33,7 +36,8 @@ class QwenTrackVisualizationTest(unittest.TestCase):
         self.assertEqual(matches, {"player_0": "player_7"})
         self.assertEqual(diagnostics[0]["method"], "trajectory_signature")
         self.assertTrue(labels["player_7"]["accepted"])
-        self.assertIn("Day'Ron Sharpe", labels["player_7"]["text"])
+        self.assertIn("#20", labels["player_7"]["text"])
+        self.assertNotIn("Day'Ron Sharpe", labels["player_7"]["text"])
         self.assertFalse(labels["player_0"]["accepted"])
 
     def test_source_track_id_takes_precedence(self):
@@ -83,6 +87,39 @@ class QwenTrackVisualizationTest(unittest.TestCase):
 
         self.assertEqual(raw_id, "ball_2")
         self.assertEqual(diagnostic["status"], "matched")
+
+    def test_temporal_events_are_validated_sorted_and_activated(self):
+        """Timeline helpers should ignore malformed events and find active ones."""
+        report = {
+            "duration_seconds": 10.0,
+            "temporal_events": [
+                {
+                    "player_id": "player_1",
+                    "jersey_number": "20",
+                    "event": "Assist",
+                    "confidence": 0.8,
+                    "start_time": 5.0,
+                    "end_time": 6.5,
+                },
+                {
+                    "player_id": "player_0",
+                    "jersey_number": "13",
+                    "event": "Made Shot",
+                    "confidence": 0.9,
+                    "start_time": 2.0,
+                    "end_time": 4.0,
+                },
+                {"event": "invalid", "start_time": 4.0, "end_time": 3.0},
+            ],
+        }
+
+        events, duration = normalize_temporal_events(report)
+
+        self.assertEqual(duration, 10.0)
+        self.assertEqual([event["event"] for event in events], ["Made Shot", "Assist"])
+        active = active_temporal_events(events, current_time=3.0)
+        self.assertEqual(len(active), 1)
+        self.assertEqual(event_display_label(active[0]), "#13 Made Shot 0.90")
 
 
 if __name__ == "__main__":

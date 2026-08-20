@@ -4,11 +4,16 @@ The raw SAM3 document contains every player and ball candidate, while the
 clean document produced by ``recognize.py`` contains only candidates accepted
 by Qwen. This script draws both sets so false rejections remain visible:
 
-* green boxes are player tracks retained by Qwen and include the recognized
-  player name, jersey number, and jersey color;
+* green boxes are player tracks retained by Qwen and display jersey numbers;
 * orange boxes are SAM3 player tracks that Qwen did not retain;
 * yellow boxes identify the basketball track selected by Qwen;
 * gray boxes are unselected SAM3 basketball candidates.
+
+When a temporal prediction report exported by ``inference.py`` is supplied,
+the renderer also draws PlayNet event evidence windows on a bottom timeline.
+These windows show which sampled clips most strongly supported each final
+player-level event; they are diagnostic localization rather than manually
+annotated event boundaries.
 
 The clean format historically renumbered accepted players. When a
 ``source_track_id`` is unavailable, this script recovers the raw ID by exact
@@ -28,6 +33,13 @@ _REJECTED_PLAYER_COLOR = (0, 165, 255)
 _SELECTED_BALL_COLOR = (0, 255, 255)
 _OTHER_BALL_COLOR = (150, 150, 150)
 _TEXT_COLOR = (255, 255, 255)
+_TIMELINE_COLORS = (
+    (0, 215, 255),
+    (255, 120, 40),
+    (220, 70, 220),
+    (70, 210, 120),
+    (80, 100, 255),
+)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -47,6 +59,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--raw_json_path", type=Path, required=True)
     parser.add_argument("--clean_json_path", type=Path, required=True)
     parser.add_argument("--output_video_path", type=Path, required=True)
+    parser.add_argument(
+        "--prediction_json_path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional temporal prediction JSON exported by inference.py. "
+            "When supplied, draw event evidence windows and a playhead."
+        ),
+    )
     parser.add_argument(
         "--report_json_path",
         type=Path,
@@ -100,6 +121,98 @@ def load_json_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} root must be a JSON object: {path}")
     return value
+
+
+def normalize_temporal_events(
+    prediction_report: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], float | None]:
+    """Validate timeline events from an inference prediction report.
+
+    Args:
+        prediction_report: Parsed report produced by ``inference.py``, or
+            ``None`` when only trajectory visualization is requested.
+
+    Returns:
+        Validated event dictionaries sorted by time and the reported video
+        duration. Invalid individual events are ignored so one malformed
+        entry does not prevent trajectory inspection.
+    """
+    if prediction_report is None:
+        return [], None
+
+    duration_value = prediction_report.get("duration_seconds")
+    try:
+        duration = float(duration_value)
+    except (TypeError, ValueError):
+        duration = None
+    if duration is not None and duration <= 0:
+        duration = None
+
+    raw_events = prediction_report.get("temporal_events", [])
+    if not isinstance(raw_events, list):
+        return [], duration
+
+    events: list[dict[str, Any]] = []
+    for raw_event in raw_events:
+        if not isinstance(raw_event, Mapping):
+            continue
+        try:
+            start_time = float(raw_event["start_time"])
+            end_time = float(raw_event["end_time"])
+            confidence = float(raw_event.get("confidence", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        event_name = str(raw_event.get("event", "")).strip()
+        if not event_name or start_time < 0 or end_time <= start_time:
+            continue
+        events.append(
+            {
+                **dict(raw_event),
+                "event": event_name,
+                "start_time": start_time,
+                "end_time": end_time,
+                "confidence": confidence,
+            }
+        )
+
+    events.sort(
+        key=lambda event: (
+            event["start_time"],
+            str(event.get("player_id", "")),
+            event["event"],
+        )
+    )
+    return events, duration
+
+
+def event_display_label(event: Mapping[str, Any]) -> str:
+    """Build a compact ASCII label for one temporal event.
+
+    Args:
+        event: Validated temporal event payload.
+
+    Returns:
+        Label containing the jersey number when available, event class, and
+        final player-level confidence.
+    """
+    number = event.get("jersey_number")
+    player_label = (
+        f"#{number}"
+        if number not in (None, "")
+        else str(event.get("player_id", "player"))
+    )
+    return f"{player_label} {event['event']} {float(event['confidence']):.2f}"
+
+
+def active_temporal_events(
+    events: Sequence[Mapping[str, Any]], current_time: float
+) -> list[Mapping[str, Any]]:
+    """Return events whose evidence intervals contain the current time."""
+    return [
+        event
+        for event in events
+        if float(event["start_time"]) <= current_time < float(event["end_time"])
+    ]
 
 
 def trajectory_signature(payload: Mapping[str, Any]) -> str | None:
@@ -266,13 +379,12 @@ def build_player_labels(
             continue
 
         payload = clean_tracks[clean_id]
-        name = payload.get("player_name") or "unknown name"
         number = payload.get("jersey_number") or "?"
         color = payload.get("jersey_color") or "unknown color"
         labels[str(raw_id)] = {
             "accepted": True,
             "clean_track_id": clean_id,
-            "text": f"{raw_id} | {name} | #{number} {color}",
+            "text": f"#{number} {color} | {raw_id}",
         }
     return labels
 
@@ -354,6 +466,90 @@ def draw_labeled_box(
     )
 
 
+def draw_event_timeline(
+    cv2: Any,
+    frame: Any,
+    events: Sequence[Mapping[str, Any]],
+    current_time: float,
+    duration_seconds: float,
+) -> None:
+    """Draw temporal event evidence bars and a current-time playhead.
+
+    Args:
+        cv2: Imported OpenCV module.
+        frame: Mutable BGR image array.
+        events: Validated temporal event dictionaries.
+        current_time: Current source-video time in seconds.
+        duration_seconds: Full source-video duration in seconds.
+    """
+    if not events or duration_seconds <= 0:
+        return
+
+    height, width = frame.shape[:2]
+    panel_height = min(112, max(76, height // 7))
+    panel_top = height - panel_height
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, panel_top), (width - 1, height - 1), (15, 15, 15), -1)
+    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0.0, frame)
+
+    left = 22
+    right = max(left + 1, width - 22)
+    bar_top = panel_top + 42
+    bar_bottom = height - 18
+    cv2.line(frame, (left, bar_bottom), (right, bar_bottom), (190, 190, 190), 2)
+
+    def time_to_x(value: float) -> int:
+        ratio = max(0.0, min(1.0, value / duration_seconds))
+        return int(round(left + ratio * (right - left)))
+
+    for event_index, event in enumerate(events):
+        color = _TIMELINE_COLORS[event_index % len(_TIMELINE_COLORS)]
+        x1 = time_to_x(float(event["start_time"]))
+        x2 = max(x1 + 3, time_to_x(float(event["end_time"])))
+        lane = event_index % 3
+        y1 = bar_top + lane * 8
+        y2 = min(bar_bottom - 4, y1 + 6)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+
+    playhead_x = time_to_x(current_time)
+    cv2.line(
+        frame,
+        (playhead_x, panel_top + 30),
+        (playhead_x, bar_bottom + 5),
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        frame,
+        f"PlayNet event evidence | t={current_time:.1f}s",
+        (left, panel_top + 23),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        _TEXT_COLOR,
+        1,
+        cv2.LINE_AA,
+    )
+
+    active = active_temporal_events(events, current_time)
+    if active:
+        label = " | ".join(event_display_label(event) for event in active[:3])
+        text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 1)
+        label_width, label_height = text_size
+        box_right = min(width - 1, left + label_width + 12)
+        box_bottom = min(panel_top - 4, 12 + label_height + baseline + 8)
+        cv2.rectangle(frame, (left, 8), (box_right, box_bottom), (20, 20, 20), -1)
+        cv2.putText(
+            frame,
+            label,
+            (left + 6, box_bottom - baseline - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            _TEXT_COLOR,
+            1,
+            cv2.LINE_AA,
+        )
+
+
 def render_overlay(
     video_path: Path,
     raw_tracks: Mapping[str, Any],
@@ -364,6 +560,7 @@ def render_overlay(
     max_frames: int | None,
     line_thickness: int,
     font_scale: float,
+    prediction_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Render Qwen acceptance and identities over raw SAM3 trajectories.
 
@@ -377,6 +574,8 @@ def render_overlay(
         max_frames: Optional maximum number of frames to render.
         line_thickness: Rectangle line thickness in pixels.
         font_scale: OpenCV font scale.
+        prediction_report: Optional temporal prediction report exported by
+            ``inference.py``.
 
     Returns:
         JSON-serializable rendering and track-matching report.
@@ -406,6 +605,7 @@ def render_overlay(
     selected_ball_id, ball_diagnostic = match_clean_ball_to_raw(
         raw_tracks, clean_tracks
     )
+    temporal_events, reported_duration = normalize_temporal_events(prediction_report)
 
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -420,6 +620,9 @@ def render_overlay(
         raise RuntimeError(f"Input video has invalid dimensions: {video_path}")
     if fps <= 0:
         fps = 30.0
+    duration_seconds = (
+        reported_duration if reported_duration is not None else source_frame_count / fps
+    )
 
     output_video_path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(
@@ -499,6 +702,13 @@ def render_overlay(
                 1,
                 cv2.LINE_AA,
             )
+            draw_event_timeline(
+                cv2,
+                frame,
+                temporal_events,
+                current_time=frame_index / fps,
+                duration_seconds=duration_seconds,
+            )
             writer.write(frame)
             frame_index += 1
     finally:
@@ -535,6 +745,12 @@ def render_overlay(
         "player_match_diagnostics": player_diagnostics,
         "selected_raw_ball_track_id": selected_ball_id,
         "ball_match_diagnostic": ball_diagnostic,
+        "temporal_event_count": len(temporal_events),
+        "temporal_prediction_schema": (
+            prediction_report.get("schema_version")
+            if prediction_report is not None
+            else None
+        ),
     }
 
 
@@ -555,6 +771,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     raw_tracks = load_json_object(args.raw_json_path, "Raw SAM3 JSON")
     clean_tracks = load_json_object(args.clean_json_path, "Qwen clean JSON")
+    prediction_report = (
+        load_json_object(args.prediction_json_path, "Temporal prediction JSON")
+        if args.prediction_json_path is not None
+        else None
+    )
     report = render_overlay(
         video_path=args.video_path,
         raw_tracks=raw_tracks,
@@ -565,6 +786,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         max_frames=args.max_frames,
         line_thickness=args.line_thickness,
         font_scale=args.font_scale,
+        prediction_report=prediction_report,
     )
     report_path = args.report_json_path or args.output_video_path.with_suffix(".json")
     write_json(report_path, report)

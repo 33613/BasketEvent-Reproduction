@@ -224,8 +224,8 @@ python recognize.py \
   --roster_json "/home/fangzilin/data/basket_artifacts/$GAME/metadata/recognize_roster.json"
 ```
 
-Render all raw SAM3 candidates together with Qwen's retained identities before
-generating labels. Green player boxes were retained by Qwen, orange player
+Render all raw SAM3 candidates together with Qwen's retained jersey numbers
+before generating labels. Green player boxes were retained by Qwen, orange player
 boxes were rejected, yellow is the selected basketball, and gray boxes are
 unselected basketball candidates:
 
@@ -236,13 +236,18 @@ python local_script/visualize_qwen_tracks.py \
   --video_path "/home/fangzilin/data/basket/$GAME/video/$CLIP.mp4" \
   --raw_json_path "/home/fangzilin/data/basket_artifacts/$GAME/tracks/raw/${CLIP}_dual_cachecpu.json" \
   --clean_json_path "/home/fangzilin/data/basket_artifacts/$GAME/tracks/clean/$CLIP.json" \
+  --prediction_json_path "/home/fangzilin/data/basket_artifacts/$GAME/predictions/${CLIP}_events.json" \
   --output_video_path "/home/fangzilin/data/basket_artifacts/$GAME/visualizations/${CLIP}_qwen_overlay.mp4"
 ```
 
 The renderer writes a JSON report beside the output MP4. New clean files also
 include `source_track_id` for direct raw-to-clean traceability; older files
 without that field are matched by their copied trajectories. The overlay MP4
-is diagnostic and intentionally has no audio.
+is diagnostic and intentionally has no audio. The optional prediction JSON
+adds a bottom timeline: each colored segment is a sampled clip that most
+strongly supported a final non-background player event, and the white line is
+the current video time. These segments are model-evidence windows rather than
+manually supervised event boundaries.
 
 On the two pre-Ampere TITAN RTX GPUs, `track_one_video.py` broadcasts each
 object limit to all SAM3 ranks, divides the tracker slots between the GPUs, and
@@ -430,3 +435,10 @@ python inference.py \
   --clip_len 8 \
   --fps_in 25 \
   --fps_out 4 \
+  --prediction_json_path outputs/events.json \
+  --timeline_topk 2
+```
+
+When `--prediction_json_path` is supplied, inference exports final player
+events plus their strongest time-aligned clip evidence. The visualization
+command above consumes this report to draw the event timeline.

@@ -1,0 +1,4 @@
+# Keep local/server diagnostic evidence out of Git while retaining this folder.
+*
+!.gitignore
+!README.md

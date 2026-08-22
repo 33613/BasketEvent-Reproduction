@@ -1,9 +1,13 @@
 """Unit tests for Qwen runtime-diagnostic parsing and roster lookup."""
 
+import argparse
+import tempfile
 import unittest
+from pathlib import Path
 
 from tests.run_qwen_diagnostics import (
     RosterIndex,
+    _require_runtime_inputs,
     _uniform_indices,
     aggregate_temporal_observations,
     classify_failure_stage,
@@ -82,6 +86,51 @@ class QwenDiagnosticTest(unittest.TestCase):
         indices = _uniform_indices(length=3, count=10)
 
         self.assertEqual(indices, [0, 1, 2])
+
+    def test_crop_only_mode_does_not_require_qwen_model(self):
+        """Manual crop export should run without loading or locating Qwen."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            video = root / "clip.mp4"
+            tracks = root / "tracks.json"
+            roster = root / "roster.json"
+            for path in (video, tracks, roster):
+                path.touch()
+            args = argparse.Namespace(
+                video=video,
+                bbox_json=tracks,
+                roster_json=roster,
+                qwen_model=root / "missing-qwen-model",
+                mode="crops",
+                num_crops=10,
+                pad_ratio=0.0,
+                minimum_number_confidence=0.60,
+            )
+
+            _require_runtime_inputs(args)
+
+    def test_model_modes_still_require_qwen_directory(self):
+        """Qwen inference modes must reject a missing local model directory."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            video = root / "clip.mp4"
+            tracks = root / "tracks.json"
+            roster = root / "roster.json"
+            for path in (video, tracks, roster):
+                path.touch()
+            args = argparse.Namespace(
+                video=video,
+                bbox_json=tracks,
+                roster_json=roster,
+                qwen_model=root / "missing-qwen-model",
+                mode="temporal",
+                num_crops=10,
+                pad_ratio=0.0,
+                minimum_number_confidence=0.60,
+            )
+
+            with self.assertRaises(NotADirectoryError):
+                _require_runtime_inputs(args)
 
     def test_free_text_number_conflict_is_reported(self):
         """A number mentioned in prose cannot coexist with a null field."""

@@ -725,14 +725,33 @@ def extract_track_crops(
 
 
 def save_contact_sheet(
-    images: Sequence[Any], records: Sequence[CropRecord], output_path: Path
+    images: Sequence[Any],
+    records: Sequence[CropRecord],
+    output_path: Path,
+    *,
+    columns: int = 5,
+    cell_width: int = 240,
+    cell_height: int = 220,
 ) -> None:
-    """Save a labeled overview of every Qwen input crop."""
+    """Save a labeled overview of every selected trajectory crop.
+
+    Args:
+        images: Chronologically ordered crop images.
+        records: Metadata corresponding one-to-one with ``images``.
+        output_path: Destination JPEG path.
+        columns: Number of images shown in each row.
+        cell_width: Width in pixels reserved for one image and its label.
+        cell_height: Height in pixels reserved for one image and its label.
+
+    Raises:
+        ValueError: If the layout is invalid or the image and record counts differ.
+    """
     from PIL import Image, ImageDraw, ImageOps
 
-    columns = 5
-    cell_width = 240
-    cell_height = 220
+    if len(images) != len(records):
+        raise ValueError("Contact-sheet images and records must have equal lengths")
+    if columns <= 0 or cell_width <= 0 or cell_height <= 42:
+        raise ValueError("Contact-sheet layout values must be positive")
     rows = (len(images) + columns - 1) // columns
     sheet = Image.new("RGB", (columns * cell_width, rows * cell_height), "white")
     draw = ImageDraw.Draw(sheet)
@@ -866,11 +885,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("both", "legacy", "decomposed", "temporal", "all"),
+        choices=("crops", "both", "legacy", "decomposed", "temporal", "all"),
         default="both",
         help=(
-            "both runs the two historical prompts; temporal runs independent "
-            "per-timestamp OCR; all runs every diagnostic."
+            "crops only exports images for manual inspection without loading "
+            "Qwen; both runs the two historical prompts; temporal runs "
+            "independent per-timestamp OCR; all runs every diagnostic."
         ),
     )
     parser.add_argument("--device", default="cuda:0")
@@ -887,7 +907,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def _require_runtime_inputs(args: argparse.Namespace) -> None:
-    """Validate input paths and numeric options before loading Qwen."""
+    """Validate input paths and numeric options before starting a run.
+
+    Crop-only audits intentionally do not require a Qwen model directory. This
+    keeps the first manual localization pass fast and allows it to run without
+    reserving GPU memory.
+    """
     for description, path in (
         ("video", args.video),
         ("SAM3 trajectory JSON", args.bbox_json),
@@ -895,7 +920,7 @@ def _require_runtime_inputs(args: argparse.Namespace) -> None:
     ):
         if not path.is_file():
             raise FileNotFoundError(f"{description} not found: {path}")
-    if not args.qwen_model.is_dir():
+    if args.mode != "crops" and not args.qwen_model.is_dir():
         raise NotADirectoryError(f"Qwen model directory not found: {args.qwen_model}")
     if args.num_crops <= 0:
         raise ValueError("--num-crops must be positive")
@@ -906,7 +931,7 @@ def _require_runtime_inputs(args: argparse.Namespace) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run per-track legacy/decomposed Qwen diagnostics and save an audit bundle."""
+    """Export track crops and optionally run per-track Qwen diagnostics."""
     args = parse_args(argv)
     _require_runtime_inputs(args)
 
@@ -955,7 +980,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     write_json(run_directory / "manifest.json", manifest)
 
-    model, processor = load_qwen_model(args.qwen_model, args.device)
+    model: Any | None = None
+    processor: Any | None = None
+    if args.mode != "crops":
+        model, processor = load_qwen_model(args.qwen_model, args.device)
     legacy_prompt: str | None = None
     if args.mode in {"both", "legacy", "all"}:
         from recognize import build_onepass_prompt, build_roster_text
@@ -992,8 +1020,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_contact_sheet(
             images, crop_records, track_directory / "contact_sheet.jpg"
         )
+        save_contact_sheet(
+            paired_images,
+            crop_records,
+            track_directory / "paired_contact_sheet.jpg",
+            columns=2,
+            cell_width=640,
+            cell_height=500,
+        )
 
-        result: dict[str, Any] = {"track_id": track_id}
+        selected_frame_indices = [item.frame_index for item in crop_records]
+        result: dict[str, Any] = {
+            "track_id": track_id,
+            "crop_audit": {
+                "crop_count": len(crop_records),
+                "selected_frame_indices": selected_frame_indices,
+                "contact_sheet": "contact_sheet.jpg",
+                "paired_contact_sheet": "paired_contact_sheet.jpg",
+            },
+        }
         if legacy_prompt is not None:
             (track_directory / "legacy_prompt.txt").write_text(
                 legacy_prompt, encoding="utf-8"
@@ -1115,6 +1160,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         write_json(track_directory / "result.json", result)
         summary: dict[str, Any] = {"track_id": track_id, "status": "completed"}
+        summary["crop_count"] = len(crop_records)
+        summary["selected_frame_indices"] = selected_frame_indices
+        summary["paired_contact_sheet"] = str(
+            (track_directory / "paired_contact_sheet.jpg").resolve()
+        )
         if "legacy" in result:
             summary["legacy_retained"] = result["legacy"][
                 "retained_by_current_code"

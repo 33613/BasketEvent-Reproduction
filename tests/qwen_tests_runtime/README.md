@@ -12,6 +12,8 @@ Each run contains:
 - `<track_id>/torso_crops/`: enlarged upper-body regions for jersey reading;
 - `<track_id>/paired_observations/`: labeled full-player/jersey image pairs;
 - `<track_id>/contact_sheet.jpg`: one visual overview of those inputs;
+- `<track_id>/paired_contact_sheet.jpg`: a larger two-column overview that
+  places the full-player crop beside its enlarged jersey region;
 - `<track_id>/crop_manifest.json`: unique selected frame, box, brightness,
   sharpness, and selection-quality data;
 - `<track_id>/legacy_*`: the current `recognize.py` prompt and response;
@@ -56,3 +58,24 @@ The sampler never pads a short trajectory by repeating its final image. It
 oversamples unique valid frames, chooses a high-quality observation inside each
 temporal bin, and stores both the full-player crop and the enlarged jersey
 region for visual auditing.
+
+## Manual crop audit without Qwen
+
+Use `--mode crops` before running an expensive model diagnostic. This mode does
+not load Qwen or reserve GPU memory. Omitting `--track-id` exports ten sampled
+observations for every raw `player_*` trajectory, which is useful when the
+clean trajectory file contains no accepted players:
+
+```bash
+python -u tests/run_qwen_diagnostics.py \
+  --video /path/to/130.mp4 \
+  --bbox-json /path/to/tracks/raw/130.json \
+  --roster-json /path/to/metadata/recognize_roster.json \
+  --run-name 130-crops-v1 \
+  --mode crops \
+  --num-crops 10
+```
+
+Inspect each `player_*/paired_contact_sheet.jpg`. After identifying the raw
+track that contains the event actor, rerun only that track with `--mode
+temporal --track-id player_N`.

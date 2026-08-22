@@ -1,0 +1,4 @@
+# Keep generated trajectories, model reports, and logs out of Git.
+*
+!.gitignore
+!README.md

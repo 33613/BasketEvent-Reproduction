@@ -31,7 +31,7 @@ def install_object_limit_request(
     imported through different editable-package paths.
 
     This function is intentionally called at module import time by
-    ``track_one_video.py``. Python's ``spawn`` multiprocessing mode imports the
+    ``src.modules.tracking.sam3_tracker``. Python's ``spawn`` mode imports the
     entry module inside every SAM3 worker, so all ranks install the same request
     handler before their command loops start.
 

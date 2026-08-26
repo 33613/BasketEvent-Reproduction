@@ -8,14 +8,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from local_script.build_bard_annotations import run_labels
-from local_script.convert_bard_subset import export_runtime
-from src.bard.labeling import (
+from src.modules.ingestion.bard.annotations_cli import run_labels
+from src.modules.ingestion.bard.prepare import export_runtime
+from src.modules.ingestion.bard.labeling import (
     BardAnnotationBuilder,
     BardLabelMapper,
     normalize_jersey_number,
 )
-from src.bard.roster import BardRosterAdapter
+from src.modules.ingestion.bard.roster import BardRosterAdapter
 
 
 def _track(number: str, color: str) -> dict[str, object]:

@@ -1,7 +1,7 @@
-"""Convert BARD season rosters into the format used by ``recognize.py``.
+"""Convert BARD season rosters into the format used by the identity resolver.
 
 BARD stores team identifiers and a season-level player list, while
-``recognize.py`` expects each team to have an independently supplied jersey
+The identity resolver expects each team to have an independently supplied jersey
 color. This module performs that structural conversion only. It never infers
 colors from BARD action labels because doing so would leak ground-truth event
 information into visual player recognition.
@@ -49,7 +49,7 @@ class RosterConversion:
 
     @property
     def accepted(self) -> bool:
-        """Return whether the roster is safe to pass to ``recognize.py``."""
+        """Return whether the roster is safe to pass to identity resolution."""
         return self.roster is not None and not any(
             item.severity == "error" for item in self.anomalies
         )
@@ -59,7 +59,7 @@ class BardRosterAdapter:
     """Adapt one BARD roster using explicit per-team jersey colors.
 
     The source roster is season-level metadata, so duplicate team/number pairs
-    are retained rather than guessed away. ``recognize.py`` is instructed to
+    are retained rather than guessed away. The identity resolver is instructed to
     leave a player name unresolved when multiple names share the same visible
     number and color.
     """

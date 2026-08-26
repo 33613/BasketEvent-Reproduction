@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.sam3_compat import install_object_limit_request
+from src.modules.tracking.compatibility import install_object_limit_request
 
 
 class FakeTensor:

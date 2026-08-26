@@ -3,17 +3,18 @@
 The command has two independent stages:
 
 ``rosters``
-    Converts BARD season rosters into the input format consumed by
-    ``recognize.py``. Team colors must come from an independently prepared
+    Converts BARD season rosters into the input format consumed by the
+    identity resolver. Team colors must come from an independently prepared
     game-level configuration; action labels are never used to infer colors.
 
 ``labels``
     Reads Qwen-cleaned trajectories and BARD structured actions, applies the
-    fixed mapping in ``src.bard.labeling``, filters to Scheme A, and writes an
+    fixed mapping in ``src.modules.ingestion.bard.labeling``, filters to
+    Scheme A, and writes an
     author-compatible annotation plus a separate anomaly report per clip.
 
 Source BARD files are treated as read-only. Generated files live under the
-artifact root configured by ``settings.py``.
+artifact root configured by ``src.core.config``.
 """
 
 from __future__ import annotations
@@ -26,16 +27,16 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from settings import SETTINGS  # noqa: E402
-from src.bard.labeling import (  # noqa: E402
+from src.core.config import SETTINGS  # noqa: E402
+from src.modules.ingestion.bard.labeling import (  # noqa: E402
     BardAnnotationBuilder,
     count_anomalies,
 )
-from src.bard.roster import BardRosterAdapter  # noqa: E402
+from src.modules.ingestion.bard.roster import BardRosterAdapter  # noqa: E402
 
 
 GAME_ID_PATTERN = re.compile(r"(\d{10})$")
@@ -66,7 +67,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "JSON with a games mapping: {bard_game: {TEAM: color}}. "
-            "See local/bard_team_colors.example.json."
+            "See config/bard_team_colors.example.json."
         ),
     )
     rosters.add_argument("--dry-run", action="store_true")
@@ -388,7 +389,7 @@ def run_labels(args: argparse.Namespace) -> dict[str, Any]:
                         video_name=video_name,
                         code="MISSING_CLEAN_TRACK",
                         message=(
-                            "Run SAM3 and recognize.py before generating labels "
+                            "Run tracking and identity resolution before generating labels "
                             "for this clip."
                         ),
                         path=clean_path,

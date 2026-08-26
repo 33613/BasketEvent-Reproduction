@@ -70,9 +70,7 @@ class TrackSegmentValidationTest(unittest.TestCase):
 
         self.assertEqual(set(document), {"player_20_segment", "ball"})
         self.assertEqual(document["ball"]["source_track_id"], "ball_2")
-        self.assertEqual(
-            document["player_20_segment"]["source_track_id"], "player_8"
-        )
+        self.assertEqual(document["player_20_segment"]["source_track_id"], "player_8")
         self.assertEqual(document["player_20_segment"]["jersey_number"], "20")
 
     def test_empty_selected_range_is_rejected(self) -> None:
@@ -100,9 +98,7 @@ class TrackSegmentValidationTest(unittest.TestCase):
             ]
         }
 
-        evaluation = evaluate_prediction_report(
-            report, "player_20_segment", "Assist"
-        )
+        evaluation = evaluate_prediction_report(report, "player_20_segment", "Assist")
 
         self.assertEqual(normalize_event_name("Assist"), "ast")
         self.assertTrue(evaluation["matched"])
@@ -130,7 +126,9 @@ class TrackSegmentValidationTest(unittest.TestCase):
         )
 
         self.assertIn("--player_ids", command)
-        self.assertEqual(command[command.index("--player_ids") + 1], "player_20_segment")
+        self.assertEqual(
+            command[command.index("--player_ids") + 1], "player_20_segment"
+        )
         self.assertIn("prediction.json", command)
 
 

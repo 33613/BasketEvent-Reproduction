@@ -2,7 +2,7 @@
 
 import unittest
 
-from local_script.visualize_qwen_tracks import (
+from src.modules.materials.visualization import (
     active_temporal_events,
     build_timeline_color_map,
     build_player_labels,

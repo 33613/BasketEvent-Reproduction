@@ -1,5 +1,0 @@
-"""Backward-compatible import path for central BasketEvent configuration."""
-
-from src.core.config import SETTINGS, Settings
-
-__all__ = ["SETTINGS", "Settings"]

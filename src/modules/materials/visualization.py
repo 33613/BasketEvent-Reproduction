@@ -1,7 +1,7 @@
 """Render SAM3 trajectories with Qwen recognition results over a video.
 
 The raw SAM3 document contains every player and ball candidate, while the
-clean document produced by ``recognize.py`` contains only candidates accepted
+clean document produced by the identity resolver contains only candidates accepted
 by Qwen. This script draws both sets so false rejections remain visible:
 
 * green boxes are player tracks retained by Qwen and display jersey numbers;
@@ -9,7 +9,7 @@ by Qwen. This script draws both sets so false rejections remain visible:
 * yellow boxes identify the basketball track selected by Qwen;
 * gray boxes are unselected SAM3 basketball candidates.
 
-When a temporal prediction report exported by ``inference.py`` is supplied,
+When a temporal prediction report exported by the event-recognition module is supplied,
 the renderer also draws PlayNet event evidence windows on a bottom timeline.
 These windows show which sampled clips most strongly supported each final
 player-level event; they are diagnostic localization rather than manually
@@ -64,7 +64,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Optional temporal prediction JSON exported by inference.py. "
+            "Optional temporal prediction JSON exported by event recognition. "
             "When supplied, draw event evidence windows and a playhead."
         ),
     )
@@ -129,7 +129,7 @@ def normalize_temporal_events(
     """Validate timeline events from an inference prediction report.
 
     Args:
-        prediction_report: Parsed report produced by ``inference.py``, or
+        prediction_report: Parsed report produced by event recognition, or
             ``None`` when only trajectory visualization is requested.
 
     Returns:
@@ -276,7 +276,7 @@ def match_clean_tracks_to_raw(
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """Match Qwen-retained player IDs back to raw SAM3 player IDs.
 
-    ``recognize.py`` now records ``source_track_id``. Older clean files are
+    The identity resolver records ``source_track_id``. Older clean files are
     supported by comparing their copied trajectories with raw trajectories.
 
     Args:
@@ -644,7 +644,7 @@ def render_overlay(
         line_thickness: Rectangle line thickness in pixels.
         font_scale: OpenCV font scale.
         prediction_report: Optional temporal prediction report exported by
-            ``inference.py``.
+            the event-recognition module.
 
     Returns:
         JSON-serializable rendering and track-matching report.

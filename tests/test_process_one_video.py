@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Sequence
 
-from local_script.process_one_video import (
+from src.application.process_clip import (
     PipelineConfig,
     SingleVideoPaths,
     SingleVideoPipeline,
@@ -41,7 +41,7 @@ class SingleVideoPipelineTest(unittest.TestCase):
         project.mkdir()
         for relative in (
             "src/modules/tracking/sam3_tracker.py",
-            "src/modules/identity/qwen_recognizer.py",
+            "src/modules/identity/resolver.py",
             "src/modules/event_recognition/inference.py",
             "src/modules/materials/visualization.py",
         ):

@@ -143,7 +143,7 @@ class BardLabelMapper:
       BasketEvent vocabulary does not distinguish its result.
     * Foul, Turnover, Jump Ball, and Rebound keep their class names.
     * Steal and Block use lowercase ``steal``/``block`` to match
-      ``src.labels.LABEL_MAP`` exactly.
+      ``src.modules.event_recognition.labels.LABEL_MAP`` exactly.
     * A shot with ``assisted=true`` creates a second ``ast`` contribution for
       ``other_player``. No other ``other_player`` relationship creates a
       BasketEvent class.
@@ -391,7 +391,7 @@ class BardAnnotationBuilder:
 
         Args:
             clean_tracks: Qwen-cleaned trajectory JSON produced by
-                ``recognize.py``.
+                the identity resolver.
             action_document: Structured BARD action JSON for the same clip.
             bard_game: BARD game-folder name.
             game_id: Numeric NBA game identifier.

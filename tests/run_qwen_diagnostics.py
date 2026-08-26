@@ -1,6 +1,6 @@
 """Diagnose Qwen player filtering and jersey recognition on SAM3 tracks.
 
-This script is intentionally separate from ``recognize.py``.  It runs the
+This script is intentionally separate from the production identity module. It runs the
 current one-pass prompt, a decomposed multi-image prompt, and an independent
 per-timestamp prompt on audited player crops, then records every input and output below
 ``tests/qwen_tests_runtime``.  The resulting audit bundle makes it possible to
@@ -28,7 +28,7 @@ from typing import Any, Mapping, Sequence
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     # Direct execution sets sys.path[0] to tests/, so expose repository modules
-    # such as settings.py and recognize.py without relying on PYTHONPATH.
+    # 这样可以直接导入项目模块，不依赖外部 PYTHONPATH 配置。
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
@@ -551,9 +551,7 @@ def _make_paired_image(full_image: Any, torso_image: Any) -> Any:
     panel_width = 320
     panel_height = 420
     header_height = 34
-    pair = Image.new(
-        "RGB", (panel_width * 2, panel_height + header_height), "white"
-    )
+    pair = Image.new("RGB", (panel_width * 2, panel_height + header_height), "white")
     draw = ImageDraw.Draw(pair)
     draw.text((8, 9), "FULL PLAYER", fill="black")
     draw.text((panel_width + 8, 9), "JERSEY REGION", fill="black")
@@ -694,9 +692,7 @@ def extract_track_crops(
     for image_index, candidate in enumerate(selected, start=1):
         frame_index = int(candidate["frame_index"])
         filename = f"image_{image_index:02d}_frame_{frame_index:06d}.jpg"
-        torso_filename = (
-            f"torso_{image_index:02d}_frame_{frame_index:06d}.jpg"
-        )
+        torso_filename = f"torso_{image_index:02d}_frame_{frame_index:06d}.jpg"
         pair_filename = f"pair_{image_index:02d}_frame_{frame_index:06d}.jpg"
         full_image = candidate["full_image"]
         torso_image = candidate["torso_image"]
@@ -772,7 +768,7 @@ def save_contact_sheet(
 
 
 def load_qwen_model(model_path: Path, device: str) -> tuple[Any, Any]:
-    """Load the same local 4-bit Qwen model configuration as ``recognize.py``."""
+    """加载与生产身份模块一致的本地 4-bit Qwen 配置。"""
     import torch
     from transformers import (
         AutoProcessor,
@@ -797,9 +793,7 @@ def load_qwen_model(model_path: Path, device: str) -> tuple[Any, Any]:
         torch_dtype=torch.float16,
     )
     model.eval()
-    processor = AutoProcessor.from_pretrained(
-        str(model_path), local_files_only=True
-    )
+    processor = AutoProcessor.from_pretrained(str(model_path), local_files_only=True)
     return model, processor
 
 
@@ -858,7 +852,7 @@ def write_json(path: Path, value: Any) -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments for one diagnostic run."""
-    from settings import SETTINGS
+    from src.core.config import SETTINGS
 
     parser = argparse.ArgumentParser(
         description="Audit Qwen validity, jersey OCR, and roster lookup per SAM3 track."
@@ -990,9 +984,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         legacy_prompt = build_onepass_prompt(build_roster_text(str(args.roster_json)))
     decomposed_prompt = build_decomposed_prompt(roster_index.allowed_colors)
-    temporal_prompt = build_temporal_observation_prompt(
-        roster_index.allowed_colors
-    )
+    temporal_prompt = build_temporal_observation_prompt(roster_index.allowed_colors)
 
     summaries: list[dict[str, Any]] = []
     for track_id in selected_tracks:
@@ -1001,9 +993,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         track_directory.mkdir()
         trajectory = raw_tracks[track_id].get("trajectory")
         if not isinstance(trajectory, list) or not trajectory:
-            summaries.append(
-                {"track_id": track_id, "status": "missing_trajectory"}
-            )
+            summaries.append({"track_id": track_id, "status": "missing_trajectory"})
             continue
 
         images, paired_images, crop_records = extract_track_crops(
@@ -1017,9 +1007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             track_directory / "crop_manifest.json",
             {"track_id": track_id, "crops": [asdict(item) for item in crop_records]},
         )
-        save_contact_sheet(
-            images, crop_records, track_directory / "contact_sheet.jpg"
-        )
+        save_contact_sheet(images, crop_records, track_directory / "contact_sheet.jpg")
         save_contact_sheet(
             paired_images,
             crop_records,
@@ -1097,9 +1085,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "output_inconsistencies": (
                     find_decomposed_output_inconsistencies(parsed)
                 ),
-                "failure_stage": classify_failure_stage(
-                    parsed, parse_error, lookup
-                ),
+                "failure_stage": classify_failure_stage(parsed, parse_error, lookup),
             }
 
         if args.mode in {"temporal", "all"}:
@@ -1166,20 +1152,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             (track_directory / "paired_contact_sheet.jpg").resolve()
         )
         if "legacy" in result:
-            summary["legacy_retained"] = result["legacy"][
-                "retained_by_current_code"
-            ]
+            summary["legacy_retained"] = result["legacy"]["retained_by_current_code"]
         if "decomposed" in result:
-            summary["decomposed_failure_stage"] = result["decomposed"][
-                "failure_stage"
-            ]
+            summary["decomposed_failure_stage"] = result["decomposed"]["failure_stage"]
         if "temporal" in result:
-            summary["temporal_status"] = result["temporal"]["aggregate"][
-                "status"
+            summary["temporal_status"] = result["temporal"]["aggregate"]["status"]
+            summary["temporal_identity_candidates"] = result["temporal"]["aggregate"][
+                "identity_candidates"
             ]
-            summary["temporal_identity_candidates"] = result["temporal"][
-                "aggregate"
-            ]["identity_candidates"]
         summaries.append(summary)
 
     summary_document = {

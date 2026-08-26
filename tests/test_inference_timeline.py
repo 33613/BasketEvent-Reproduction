@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from inference import build_temporal_prediction_report
+from src.modules.event_recognition.inference import build_temporal_prediction_report
 
 
 class TemporalPredictionReportTest(unittest.TestCase):

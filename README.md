@@ -1,219 +1,194 @@
-# BasketEvent Reproduction
+# BasketEvent 视频素材理解系统
 
-BasketEvent Reproduction is being reorganized from a paper-reproduction
-repository into a modular basketball-video processing backend. The current
-system preserves the verified SAM3 → Qwen → TimeSformer/PlayNet inference path
-while introducing simple product-facing modules for user-video ingestion,
-long-video segmentation, and material statistics.
+本仓库以 BasketEvent 论文方法为基础，目标是把一场篮球比赛视频自动处理成可检索、可分类的短片素材。当前阶段先保证数据处理链路清晰、可验证，再逐步接入长视频切分、身份归并、事件分类和素材管理。
 
-The immediate product goal is:
-
-> Accept a basketball game video, split it into model-sized clips, identify
-> tracked players by jersey color and number, classify player-level events, and
-> organize the resulting clips as searchable materials.
-
-Automatic highlight editing, databases, Web APIs, and user interfaces are not
-implemented yet.
-
-## Processing flow
+## 当前处理流程
 
 ```text
-User video
-  -> ingestion and media metadata
-  -> long-video segmentation
-  -> SAM3 player/ball tracking
-  -> Qwen jersey recognition and trajectory filtering
-  -> TimeSformer + PlayNet player-event recognition
-  -> visualization and material statistics
+用户视频
+  → 视频接入与元数据检查
+  → 长视频切分
+  → SAM3 球员与篮球轨迹
+  → 轨迹截图取样
+  → Qwen 逐帧视觉观察
+  → 身份解析与跨片段归并
+  → TimeSformer + PlayNet 事件识别
+  → 可视化与素材统计
 ```
 
-`ingestion` is not a dataset downloader or a neural network. It is the product
-boundary that validates an uploaded video, reads its FPS, duration, resolution,
-and frame count, and assigns an internal `video_id`. Later storage or API code
-can change where uploaded files live without changing downstream modules.
+模型权重、原始视频和生成的中间数据均不提交到 Git。代码通过集中配置读取它们。
 
-## Source layout
+## 目录结构
 
 ```text
-src/
-├── core/
-│   └── config.py                 # Paths and runtime configuration
-├── modules/
-│   ├── ingestion/                # User-video metadata and legacy BARD adapters
-│   ├── segmentation/             # Fixed-window long-video baseline
-│   ├── tracking/                 # SAM3 tracking and TITAN compatibility
-│   ├── identity/                 # Qwen player/jersey recognition
-│   ├── event_recognition/        # Dataset, inference, training, solver, labels
-│   │   └── playnet/              # PlayNet model assembly and layers
-│   └── materials/                # Visualization and material statistics
-└── application/
-    ├── process_clip.py           # Existing complete single-clip workflow
-    └── process_video.py          # User-video ingestion and segmentation use case
+BasketEvent/
+├── config/
+│   ├── bard_team_colors.example.json
+│   └── environment/                 # 服务器环境固化文件
+├── sam3/                            # SAM3 Git 子模块
+├── src/
+│   ├── application/                 # 只编排业务流程，不实现模型细节
+│   │   ├── process_clip.py           # 单个短片完整处理
+│   │   └── process_video.py          # 长视频接入与切分
+│   ├── core/
+│   │   └── config.py                 # 路径和运行配置
+│   └── modules/
+│       ├── ingestion/                # 视频与 BARD 数据接入
+│       ├── segmentation/             # 长视频切分
+│       ├── tracking/                 # SAM3 轨迹生成
+│       ├── identity/                 # Qwen 观察与球员身份处理
+│       ├── event_recognition/        # TimeSformer + PlayNet
+│       └── materials/                # 可视化与素材统计
+├── tests/                            # 单元测试和受控诊断脚本
+├── requirements.txt
+└── README.md
 ```
 
-The application layer coordinates public module contracts. It does not contain
-SAM3, Qwen, or PlayNet algorithms. An implementation can therefore be improved
-inside its module without changing the stage ordering in the application.
+仓库不再保留根目录脚本或 `src` 根目录兼容文件。每项功能只有一份实现，统一通过 `python -m 完整模块路径` 调用。
 
-The historical root scripts remain as compatibility entry points:
-
-- `track_one_video.py`
-- `recognize.py`
-- `inference.py`
-- `train.py`
-- `local_script/process_one_video.py`
-- `local_script/visualize_qwen_tracks.py`
-
-New code should import from `src.modules` and `src.application` instead.
-
-## Repository setup
-
-Clone the repository together with the SAM3 submodule before running tracking:
-
-```bash
-git clone --recurse-submodules git@github.com:33613/BasketEvent-Reproduction.git
-cd BasketEvent-Reproduction
-git submodule update --init --recursive
-```
-
-The Python environment and model weights remain external to Git. Install the
-project dependencies in an isolated environment and make sure `ffmpeg` is on
-`PATH` before exporting long-video clips.
-
-## Configuration
-
-Central configuration lives in `src/core/config.py`. The root `settings.py`
-module is retained only for backward compatibility.
-
-Important environment variables:
-
-| Variable | Default on the lab server |
-| --- | --- |
-| `BASKETEVENT_DATA_ROOT` | `/home/fangzilin/data/basket` |
-| `BASKETEVENT_ARTIFACTS_ROOT` | `/home/fangzilin/data/basket_artifacts` |
-| `BASKETEVENT_RUNTIME_ROOT` | `/home/fangzilin/data/basket_runtime` |
-| `BASKETEVENT_MODEL_ROOT` | `/home/fangzilin/models` |
-| `BASKETEVENT_GPU_IDS` | `0` |
-| `BASKETEVENT_HF_LOCAL_FILES_ONLY` | `true` |
-
-Expected model locations below `BASKETEVENT_MODEL_ROOT`:
+## Identity 模块
 
 ```text
-models/
-├── sam3/sam3.pt
-├── Qwen2.5-VL-7B-Instruct/
-├── timesformer-base-finetuned-k400/
-└── basketevent/playnet.pt
+src/modules/identity/
+├── sampling.py       # TrackSampler：按每条轨迹的有效帧独立取样
+├── qwen_observer.py  # QwenTrackObserver：生成逐帧视觉观察
+├── resolver.py       # IdentityResolver：聚合证据、可选名单检索和命令入口
+├── clustering.py     # CrossClipIdentityClusterer：跨片段人物素材归并
+└── models.py         # 阶段之间传递的中间数据结构
 ```
 
-## Existing single-clip workflow
+Identity 阶段遵循以下边界：
 
-The verified server workflow remains available:
+- `TrackSampler` 只负责读取视频和轨迹、产生带原始帧号的截图，不复制短轨迹末帧。
+- `QwenTrackObserver` 只描述每张图是不是场上球员、球衣颜色和号码，不猜球员姓名，也不决定是否删除整条轨迹。
+- `IdentityResolver` 把逐帧证据解析成 `stable`、`mixed`、`unresolved` 或 `invalid`。
+- `mixed` 表示 SAM3 轨迹发生身份切换，必须先按时间拆分；不能用多数票覆盖冲突。
+- `unresolved` 表示已确认是场上球员但号码不可读，仍保留给事件识别，避免旧版硬过滤造成漏检。
+- 比赛名单是可选输入。没有名单时使用“球衣颜色 + 号码”作为人物标识。
+
+身份处理会生成两个文件：
+
+- 指定的 `json_save_path`：供 PlayNet 使用的干净轨迹。
+- 同目录下的 `*_identity.json`：逐帧观察、解析状态和篮球选择的审计报告。
+
+## 环境准备
+
+服务器当前验证环境位于：
 
 ```bash
 source /home/fangzilin/tools/miniconda3/etc/profile.d/conda.sh
 conda activate /home/fangzilin/envs/basketevent
 export PYTHONNOUSERSITE=1
 export TOKENIZERS_PARALLELISM=false
-
-python -u local_script/process_one_video.py \
-  --game bkn-vs-det-0022400861 \
-  --clip 100
 ```
 
-The application launches each GPU-heavy module in a separate process so SAM3,
-Qwen, and PlayNet do not occupy GPU memory at the same time. Existing non-empty
-artifacts are reused by default.
-
-Each stage can also be invoked through its canonical module:
+首次克隆后初始化 SAM3：
 
 ```bash
-python -m src.modules.tracking.sam3_tracker --help
-python -m src.modules.identity.qwen_recognizer --help
-python -m src.modules.event_recognition.inference --help
-python -m src.modules.materials.visualization --help
+git submodule update --init --recursive
 ```
 
-## Long-video baseline
+模型默认目录：
 
-The first long-video strategy creates overlapping fixed windows. It preserves
-the exact source-video timestamps in a manifest and can optionally materialize
-MP4 clips through FFmpeg.
-
-```python
-from pathlib import Path
-
-from src.application.process_video import (
-    LongVideoProcessingApplication,
-    LongVideoProcessingConfig,
-)
-from src.modules.ingestion import VideoIngestionService
-from src.modules.segmentation import LongVideoSegmenter
-
-application = LongVideoProcessingApplication(
-    ingestion=VideoIngestionService(),
-    segmenter=LongVideoSegmenter(
-        window_seconds=12,
-        overlap_seconds=2,
-    ),
-    config=LongVideoProcessingConfig(
-        output_root=Path("data/processed"),
-        export_clips=False,
-    ),
-)
-
-report = application.run("game.mp4")
+```text
+/home/fangzilin/models/
+├── sam3/sam3.pt
+├── Qwen2.5-VL-7B-Instruct/
+├── timesformer-base-finetuned-k400/
+└── basketevent/playnet.pt
 ```
 
-Set `export_clips=True` after confirming that `ffmpeg` is available. This is a
-baseline rather than the final event-aware segmentation method. Future replay,
-scoreboard, audio, or shot-boundary strategies should keep the same `plan`
-contract.
+路径可通过以下环境变量覆盖：
 
-## Material statistics
+- `BASKETEVENT_DATA_ROOT`
+- `BASKETEVENT_ARTIFACTS_ROOT`
+- `BASKETEVENT_RUNTIME_ROOT`
+- `BASKETEVENT_MODEL_ROOT`
+- `BASKETEVENT_GPU_IDS`
+- `BASKETEVENT_HF_LOCAL_FILES_ONLY`
 
-PlayNet prediction reports can already be summarized without knowing real
-player names:
+## 运行单个视频片段
 
-```python
-from src.modules.materials import MaterialStatisticsService
+完整流程入口位于 `src.application.process_clip`：
 
-statistics = MaterialStatisticsService().summarize_files(
-    ["clip_100_events.json", "clip_101_events.json"]
-)
-print(statistics.to_dict())
+```bash
+python -m src.application.process_clip \
+  --game bkn-vs-det-0022400861 \
+  --clip 100 \
+  --sam3-gpus 0,1 \
+  --qwen-gpus 0 \
+  --playnet-gpu 0
 ```
 
-Participants are grouped with labels such as `white #20`. Database-backed
-cataloging and cross-clip person re-identification are later milestones.
+已有中间结果时可从后续阶段继续：
 
-## Current compatibility limits
+```bash
+python -m src.application.process_clip \
+  --game bkn-vs-det-0022400861 \
+  --clip 100 \
+  --start-at qwen
+```
 
-- The production Qwen module still follows the original one-pass roster-based
-  filtering logic. Making the roster optional and adding temporal identity
-  aggregation are the next identity-module changes.
-- Fixed-window segmentation does not yet detect true possessions, replays, or
-  broadcast transitions.
-- The author checkpoint is useful for method validation, but predictions on
-  BARD or arbitrary user videos can differ from the paper because the original
-  training videos were not released.
-- Training, diagnostics, and BARD conversion utilities are retained for
-  reproducibility but are not part of the future upload workflow.
+只重新生成可视化：
 
-## Tests
+```bash
+python -m src.application.process_clip \
+  --game bkn-vs-det-0022400861 \
+  --clip 100 \
+  --visualize-only
+```
 
-Run the CPU-compatible suite from the repository root:
+也可以单独运行 Identity 阶段：
+
+```bash
+python -m src.modules.identity.resolver \
+  --video_path /home/fangzilin/data/basket/GAME/video/CLIP.mp4 \
+  --bbox_json_path /home/fangzilin/data/basket_artifacts/GAME/tracks/raw/CLIP.json \
+  --json_save_path /home/fangzilin/data/basket_artifacts/GAME/tracks/clean/CLIP.json \
+  --roster_json /home/fangzilin/data/basket_artifacts/GAME/metadata/recognize_roster.json \
+  --qwen_model /home/fangzilin/models/Qwen2.5-VL-7B-Instruct \
+  --gpus_to_use 0
+```
+
+不提供 `--roster_json` 时，系统不会尝试映射真实姓名。
+
+## 长视频基础切分
+
+当前长视频模块先提供固定时长、带重叠窗口的可靠基线：
+
+```bash
+python -m src.application.process_video INPUT.mp4 \
+  --output-root /home/fangzilin/data/video_jobs \
+  --window-seconds 12 \
+  --overlap-seconds 2 \
+  --export-clips
+```
+
+后续可以在不修改应用层的前提下，把固定窗口替换为镜头边界、记分牌时间或比赛事件驱动的切分器。
+
+## BARD 数据工具
+
+BARD 相关工具已经归入数据接入模块：
+
+```bash
+python -m src.modules.ingestion.bard.prepare --help
+python -m src.modules.ingestion.bard.annotations_cli --help
+```
+
+环境固化文件位于 `config/environment/`，比赛球衣颜色配置示例位于 `config/bard_team_colors.example.json`。
+
+## 测试
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Runtime diagnostic scripts under `tests/` may additionally require local model
-weights and a CUDA GPU.
+`tests/qwen_tests_runtime/` 和 `tests/track_segment_runtime/` 只保存运行时诊断结果的目录约定，生成的大文件不会提交。
 
-## Attribution
+## 当前限制
 
-This repository is derived from the original BasketEvent research code and is
-being extended for reproducibility and product prototyping. External datasets,
-model weights, and upstream submodules retain their respective licenses and
-attribution requirements.
+- TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容注意力路径，速度较慢。
+- 跨片段聚类目前以球衣颜色和号码作为确定性基线，尚未接入人物 ReID 特征。
+- `mixed` 轨迹已经能被发现，但自动确定身份切换边界仍是下一步工作。
+- 长视频切分目前是固定窗口基线，还没有使用比赛时钟、文字播报或镜头语义。
+- 作者未公开原始训练视频与完整标签生成过程，作者 checkpoint 仅用于方法链路验证，不能代表在 BARD 上的最终准确率。

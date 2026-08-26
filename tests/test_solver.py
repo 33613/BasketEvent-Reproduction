@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW, SGD
 
-from src.solver import (
+from src.modules.event_recognition.solver import (
     CheckpointManager,
     DistributedContext,
     PlayerEventObjective,

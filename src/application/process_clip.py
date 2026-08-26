@@ -298,7 +298,7 @@ class SingleVideoPipeline:
             / "src"
             / "modules"
             / "identity"
-            / "qwen_recognizer.py",
+            / "resolver.py",
             "event-recognition module": self.paths.project_root
             / "src"
             / "modules"
@@ -432,24 +432,25 @@ class SingleVideoPipeline:
 
     def _qwen_command(self) -> list[str]:
         """Build the Qwen trajectory-filtering command."""
-        return [
+        command = [
             sys.executable,
             "-u",
             "-m",
-            "src.modules.identity.qwen_recognizer",
+            "src.modules.identity.resolver",
             "--video_path",
             str(self.paths.video),
             "--bbox_json_path",
             str(self.paths.raw_tracks),
             "--json_save_path",
             str(self.paths.clean_tracks),
-            "--roster_json",
-            str(self.paths.roster),
             "--gpus_to_use",
             self.config.qwen_gpus,
             "--qwen_model",
             str(self.paths.qwen_model),
         ]
+        if self.paths.roster.is_file():
+            command.extend(["--roster_json", str(self.paths.roster)])
+        return command
 
     def _playnet_command(self) -> list[str]:
         """Build the TimeSformer and PlayNet inference command."""

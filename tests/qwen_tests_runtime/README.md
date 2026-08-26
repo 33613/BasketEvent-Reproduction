@@ -16,7 +16,7 @@ Each run contains:
   places the full-player crop beside its enlarged jersey region;
 - `<track_id>/crop_manifest.json`: unique selected frame, box, brightness,
   sharpness, and selection-quality data;
-- `<track_id>/legacy_*`: the current `recognize.py` prompt and response;
+- `<track_id>/legacy_*`: the historical single-pass prompt and response;
 - `<track_id>/decomposed_*`: validity/jersey-only prompt and response;
 - `<track_id>/temporal_outputs/`: independent strict-JSON Qwen response for
   every selected timestamp;

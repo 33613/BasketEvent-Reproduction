@@ -1,6 +1,7 @@
 """Assemble the complete BasketEvent player-event recognition network.
 
-The reusable building blocks live in :mod:`src.layer`.  This module owns only
+The reusable building blocks live in
+:mod:`src.modules.event_recognition.playnet.layers`. This module owns only
 the high-level model topology so checkpoint parameter names remain stable.
 """
 

@@ -9,7 +9,8 @@ The script keeps two data layouts separate:
    renamed or moved.  It scans file names only and never decodes video data.
 3. ``export`` converts accepted annotations from
    ``<artifacts>/<game>/annotations`` to the directory layout read by
-   ``BasketEvent/src/dataset.py``. Source BARD folders remain read-only.
+   ``src.modules.event_recognition.dataset``. Source BARD folders remain
+   read-only.
 
 The ``make-split`` command assigns whole games to train/valid/test.  Splitting
 by game prevents clips from the same game from leaking across data splits.
@@ -33,11 +34,11 @@ from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from settings import SETTINGS  # noqa: E402
+from src.core.config import SETTINGS  # noqa: E402
 
 
 HF_REPO = "GabrieleGiudici/BARD"
@@ -75,9 +76,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     prepare = subparsers.add_parser(
         "prepare", help="Download selected BARD files and build staging games."
     )
-    prepare.add_argument(
-        "--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT
-    )
+    prepare.add_argument("--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT)
     prepare.add_argument(
         "--source-dir",
         type=Path,
@@ -178,11 +177,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     make_split.add_argument("--dry-run", action="store_true")
 
     export = subparsers.add_parser(
-        "export", help="Export completed staging games for src/dataset.py."
+        "export",
+        help="Export completed games for the event-recognition dataset loader.",
     )
-    export.add_argument(
-        "--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT
-    )
+    export.add_argument("--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT)
     export.add_argument(
         "--runtime-root",
         type=Path,
@@ -330,9 +328,7 @@ def download_metadata(source_dir: Path, max_workers: int) -> None:
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
-        raise RuntimeError(
-            "Install huggingface_hub before using --download."
-        ) from exc
+        raise RuntimeError("Install huggingface_hub before using --download.") from exc
     snapshot_download(
         repo_id=HF_REPO,
         repo_type="dataset",
@@ -402,9 +398,7 @@ def download_selected_videos(
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
-        raise RuntimeError(
-            "Install huggingface_hub before using --download."
-        ) from exc
+        raise RuntimeError("Install huggingface_hub before using --download.") from exc
     allow_patterns = [
         video_key
         for game in selected_games
@@ -514,9 +508,7 @@ def build_roster(game: str, players: list[dict[str, str]]) -> dict[str, Any]:
         if player.get("Team") not in team_codes:
             continue
         jersey_numbers = [
-            value
-            for value in (player.get("Number"), player.get("Number2"))
-            if value
+            value for value in (player.get("Number"), player.get("Number2")) if value
         ]
         roster.append(
             {
@@ -759,7 +751,9 @@ def prepare_game(
         if source_video.resolve() == destination_video.resolve():
             outcomes["existing"] += 1
         else:
-            outcomes[materialize_file(source_video, destination_video, materialize)] += 1
+            outcomes[
+                materialize_file(source_video, destination_video, materialize)
+            ] += 1
 
         pbp = {
             "schema_version": "bard_pbp.v1",
@@ -814,9 +808,7 @@ def discover_staging_games(workspace_root: Path) -> list[str]:
     )
 
 
-def discover_annotated_games(
-    games: Sequence[str], annotations_root: Path
-) -> list[str]:
+def discover_annotated_games(games: Sequence[str], annotations_root: Path) -> list[str]:
     """Keep only games with at least one accepted Scheme-A annotation.
 
     Args:
@@ -1050,10 +1042,7 @@ def export_runtime(
                 raise FileNotFoundError(f"No MP4 files found in: {video_dir}")
             for video in videos:
                 annotation = (
-                    annotations_root
-                    / game
-                    / "annotations"
-                    / f"{video.stem}.json"
+                    annotations_root / game / "annotations" / f"{video.stem}.json"
                 )
                 destination_video = runtime_root / "videos" / game_id / video.name
                 destination_annotation = (
@@ -1082,9 +1071,7 @@ def export_runtime(
                     continue
                 if not dry_run:
                     materialize_file(video, destination_video, materialize)
-                    materialize_file(
-                        annotation, destination_annotation, materialize
-                    )
+                    materialize_file(annotation, destination_annotation, materialize)
                 manifest_rows.append(
                     {
                         "status": "exported",
@@ -1148,7 +1135,9 @@ def run_prepare(args: argparse.Namespace) -> None:
         {"game": game, "video_count": len(videos_by_game[game])}
         for game in selected_games
     ]
-    print(json.dumps({"selected_games": selection_summary}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps({"selected_games": selection_summary}, ensure_ascii=False, indent=2)
+    )
     if args.metadata_only:
         print(
             json.dumps(
@@ -1218,7 +1207,9 @@ def run_repair_manifest(args: argparse.Namespace) -> None:
     games = list(dict.fromkeys(args.games)) if args.games else discovered
     unknown = sorted(set(games) - set(discovered))
     if unknown:
-        raise FileNotFoundError(f"Games are not staged under {workspace_root}: {unknown}")
+        raise FileNotFoundError(
+            f"Games are not staged under {workspace_root}: {unknown}"
+        )
     results = [
         repair_game_manifest(workspace_root / game, args.dry_run) for game in games
     ]
@@ -1252,9 +1243,7 @@ def run_make_split(args: argparse.Namespace) -> None:
             f"{annotations_root}/<game>/annotations. Run the fixed-rule label "
             "builder after SAM3/Qwen track preparation."
         )
-    config = build_split_config(
-        games, args.train_ratio, args.valid_ratio, args.seed
-    )
+    config = build_split_config(games, args.train_ratio, args.valid_ratio, args.seed)
     config["annotations_root"] = str(annotations_root)
     config["excluded_unannotated_games"] = sorted(set(staged_games) - set(games))
     if not args.dry_run:
@@ -1272,9 +1261,7 @@ def run_export(args: argparse.Namespace) -> None:
     split_file = args.split_file.resolve()
     splits = load_split_config(split_file)
     staged_games = set(discover_staging_games(workspace_root))
-    configured_games = {
-        game for split in VALID_SPLITS for game in splits[split]
-    }
+    configured_games = {game for split in VALID_SPLITS for game in splits[split]}
     unknown = sorted(configured_games - staged_games)
     if unknown:
         raise FileNotFoundError(f"Split file references unstaged games: {unknown}")

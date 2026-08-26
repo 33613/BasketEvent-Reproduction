@@ -1,10 +1,11 @@
 """Validate PlayNet on one manually audited segment of a mixed SAM3 track.
 
-This runtime experiment does not modify ``recognize.py`` or the original raw
+This runtime experiment does not modify the identity module or the original raw
 and clean trajectory files.  It copies one selected source track, masks every
 bounding box outside an inclusive stable frame range, attaches an explicitly
 provided jersey identity, and preserves the Qwen-selected ball trajectory.
-The resulting temporary clean JSON can then be passed to ``inference.py``.
+The resulting temporary clean JSON can then be passed to the event-recognition
+inference module.
 
 The script records the manual boundary assumption, generated command, model
 output, and expected-event comparison in a dedicated run directory.  A
@@ -137,7 +138,11 @@ def build_segment_document(
         )
 
     segment_trajectory = [
-        bbox if spec.start_frame <= index <= spec.end_frame and is_valid_bbox(bbox) else None
+        (
+            bbox
+            if spec.start_frame <= index <= spec.end_frame and is_valid_bbox(bbox)
+            else None
+        )
         for index, bbox in enumerate(trajectory)
     ]
     retained_frames = [
@@ -198,7 +203,7 @@ def evaluate_prediction_report(
     """Compare one player prediction with the expected event.
 
     Args:
-        report: Prediction JSON exported by ``inference.py``.
+        report: Prediction JSON exported by the event-recognition module.
         output_track_id: Temporary player key to locate.
         expected_event: Canonical label or human-readable alias such as
             ``Assist``.
@@ -249,11 +254,12 @@ def build_inference_command(
     trajectory_path: Path,
     prediction_path: Path,
 ) -> list[str]:
-    """Build the existing ``inference.py`` command for this experiment."""
+    """构造事件识别模块的受控实验命令。"""
     return [
         sys.executable,
         "-u",
-        "inference.py",
+        "-m",
+        "src.modules.event_recognition.inference",
         "--video",
         str(args.video),
         "--traj_json",
@@ -307,7 +313,7 @@ def run_logged_command(command: Sequence[str], log_file: TextIO) -> int:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments for one stable-segment experiment."""
-    from settings import SETTINGS
+    from src.core.config import SETTINGS
 
     parser = argparse.ArgumentParser(
         description=(

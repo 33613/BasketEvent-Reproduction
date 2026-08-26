@@ -1,7 +1,8 @@
 """Command-line entry point for distributed BasketEvent training.
 
 This module translates command-line options into concrete dependencies.  The
-training lifecycle itself is implemented by :class:`src.solver.Solver` and is
+training lifecycle itself is implemented by
+:class:`src.modules.event_recognition.solver.Solver` and is
 started through its public ``run()`` method.
 """
 

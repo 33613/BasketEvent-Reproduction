@@ -12,7 +12,7 @@ from src.application.process_video import (
     LongVideoProcessingConfig,
 )
 from src.modules.ingestion import VideoAsset
-from src.modules.materials import MaterialStatisticsService
+from src.modules.catalog import MaterialStatisticsService
 from src.modules.segmentation import LongVideoSegmenter
 
 

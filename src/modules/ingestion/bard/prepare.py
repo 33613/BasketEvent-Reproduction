@@ -9,7 +9,7 @@ The script keeps two data layouts separate:
    renamed or moved.  It scans file names only and never decodes video data.
 3. ``export`` converts accepted annotations from
    ``<artifacts>/<game>/annotations`` to the directory layout read by
-   ``src.modules.event_recognition.dataset``. Source BARD folders remain
+   ``training.dataset``. Source BARD folders remain
    read-only.
 
 The ``make-split`` command assigns whole games to train/valid/test.  Splitting

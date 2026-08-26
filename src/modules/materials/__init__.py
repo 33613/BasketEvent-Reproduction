@@ -1,8 +1,1 @@
-"""Processed clip visualization, cataloging, and statistics."""
-
-from src.modules.materials.statistics import (
-    MaterialStatistics,
-    MaterialStatisticsService,
-)
-
-__all__ = ["MaterialStatistics", "MaterialStatisticsService"]
+"""提供处理结果的视频可视化能力。"""

@@ -15,7 +15,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from src.core.config import SETTINGS
-from src.modules.event_recognition.dataset import (
+from src.modules.event_recognition.trajectory import (
     load_ball_from_json_resized,
     load_bbox_from_json_resized_onepid,
 )

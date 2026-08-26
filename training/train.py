@@ -2,7 +2,7 @@
 
 This module translates command-line options into concrete dependencies.  The
 training lifecycle itself is implemented by
-:class:`src.modules.event_recognition.solver.Solver` and is
+:class:`training.solver.Solver` and is
 started through its public ``run()`` method.
 """
 
@@ -17,10 +17,10 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader, DistributedSampler
 
 from src.core.config import SETTINGS
-from src.modules.event_recognition.dataset import VideoBagClipsDataset, bag_collate_fn
+from training.dataset import VideoBagClipsDataset, bag_collate_fn
 from src.modules.event_recognition.labels import LABEL_MAP
 from src.modules.event_recognition.playnet.model import PlayerEventModel
-from src.modules.event_recognition.solver import (
+from training.solver import (
     DistributedContext,
     Solver,
     SolverConfig,

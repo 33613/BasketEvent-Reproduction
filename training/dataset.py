@@ -8,10 +8,15 @@ from torchvision.io import read_video
 import torch.nn.functional as F
 
 from src.modules.event_recognition.labels import LABEL_MAP
+from src.modules.event_recognition.trajectory import (
+    load_ball_from_json_resized,
+    load_bbox_from_json_resized_onepid,
+)
 
 # -------------------------
 # cache utils
 # -------------------------
+
 
 def save_index_cache(path: str, data: Any):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -25,109 +30,6 @@ def load_index_cache(path: str) -> Optional[Any]:
     with open(path, "rb") as f:
         return pickle.load(f)
 
-# -------------------------
-# helpers: bbox loader (single pid) with resize
-# -------------------------
-
-def load_bbox_from_json_resized_onepid(
-    bbox_info: Dict[str, Any],
-    person_id: str,
-    kept_indices: List[int],
-    scale_x: float,
-    scale_y: float,
-    to_xyxy: bool = True,
-    dtype: torch.dtype = torch.float32,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    bbox_info: 已经 json.load 的 dict（避免每次读文件）
-    return:
-      bboxes: (T,4)
-      valid: (T,)
-    """
-    pid_key = str(person_id)
-    if pid_key not in bbox_info:
-        T = len(kept_indices)
-        return torch.zeros((T, 4), dtype=dtype), torch.zeros((T,), dtype=dtype)
-
-    traj = bbox_info[pid_key].get("trajectory", [])
-    total = len(traj)
-
-    T = len(kept_indices)
-    bboxes = torch.zeros((T, 4), dtype=dtype)
-    valid = torch.zeros((T,), dtype=dtype)
-
-    for i, fi in enumerate(kept_indices):
-        if total <= 0:
-            continue
-        if fi < 0:
-            fi = 0
-        elif fi >= total:
-            fi = total - 1
-
-        b = traj[fi]
-        if b is None or (not isinstance(b, list)) or len(b) != 4:
-            continue
-
-        x, y, w, h = map(float, b)
-        x *= scale_x; w *= scale_x
-        y *= scale_y; h *= scale_y
-
-        if to_xyxy:
-            bboxes[i] = torch.tensor([x, y, x + w, y + h], dtype=dtype)
-        else:
-            bboxes[i] = torch.tensor([x, y, w, h], dtype=dtype)
-
-        valid[i] = 1.0
-
-    return bboxes, valid
-
-
-def load_ball_from_json_resized(
-    bbox_info: Dict[str, Any],
-    kept_indices: List[int],
-    scale_x: float,
-    scale_y: float,
-    to_xyxy: bool = True,
-    dtype: torch.dtype = torch.float32,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Load ball trajectory from json top-level "ball" item.
-    return:
-      ball_boxes: (T,4)
-      valid: (T,)
-    """
-    ball_info = bbox_info.get("ball", {})
-    traj = ball_info.get("trajectory", [])
-    total = len(traj)
-
-    T = len(kept_indices)
-    ball_boxes = torch.zeros((T, 4), dtype=dtype)
-    valid = torch.zeros((T,), dtype=dtype)
-
-    for i, fi in enumerate(kept_indices):
-        if total <= 0:
-            continue
-        if fi < 0:
-            fi = 0
-        elif fi >= total:
-            fi = total - 1
-
-        b = traj[fi]
-        if b is None or (not isinstance(b, list)) or len(b) != 4:
-            continue
-
-        x, y, w, h = map(float, b)
-        x *= scale_x; w *= scale_x
-        y *= scale_y; h *= scale_y
-
-        if to_xyxy:
-            ball_boxes[i] = torch.tensor([x, y, x + w, y + h], dtype=dtype)
-        else:
-            ball_boxes[i] = torch.tensor([x, y, w, h], dtype=dtype)
-
-        valid[i] = 1.0
-
-    return ball_boxes, valid
 
 # -------------------------
 # Bag dataset (fixed M clips per bag)
@@ -151,7 +53,6 @@ class VideoBagClipsDataset(Dataset):
         fps_out: int = 5,
         bag_clips: int = 6,
         size: int = 224,
-
         bbox_dir: str = "",
         video_dir: str = "",
         cache_path: str = "",
@@ -171,7 +72,9 @@ class VideoBagClipsDataset(Dataset):
         stride_frames = max(1, int(round(self.fps_in / self.fps_out)))
         self.sample_stride_frames = stride_frames
 
-        self.clip_offsets = torch.arange(self.clip_len, dtype=torch.long) * self.sample_stride_frames
+        self.clip_offsets = (
+            torch.arange(self.clip_len, dtype=torch.long) * self.sample_stride_frames
+        )
         self.clip_span = int(self.clip_offsets[-1].item()) + 1
 
         self.cache_path = cache_path
@@ -252,18 +155,27 @@ class VideoBagClipsDataset(Dataset):
                     if self.bag_clips == 1:
                         starts = [int(max_start // 2)]
                     else:
-                        starts = torch.linspace(0, max_start, self.bag_clips).round().long().tolist()
+                        starts = (
+                            torch.linspace(0, max_start, self.bag_clips)
+                            .round()
+                            .long()
+                            .tolist()
+                        )
 
                     if len(starts) != self.bag_clips:
-                        starts = (starts + [starts[-1]] * self.bag_clips)[:self.bag_clips]
+                        starts = (starts + [starts[-1]] * self.bag_clips)[
+                            : self.bag_clips
+                        ]
 
-                    self.index.append({
-                        "game": game,
-                        "video_name": video_name,
-                        "nums": int(nums),
-                        "events": events,
-                        "starts": starts,
-                    })
+                    self.index.append(
+                        {
+                            "game": game,
+                            "video_name": video_name,
+                            "nums": int(nums),
+                            "events": events,
+                            "starts": starts,
+                        }
+                    )
 
             cache = {
                 "meta": {
@@ -296,7 +208,7 @@ class VideoBagClipsDataset(Dataset):
         starts = item["starts"]
 
         video_path = os.path.join(self.video_dir, game, video_name + ".mp4")
-        bbox_path  = os.path.join(self.bbox_dir, game, video_name + ".json")
+        bbox_path = os.path.join(self.bbox_dir, game, video_name + ".json")
 
         video_all, _, _ = read_video(video_path, pts_unit="sec")
         total_frames = int(video_all.shape[0])
@@ -333,10 +245,19 @@ class VideoBagClipsDataset(Dataset):
 
             frames = video_all[idx].float() / 255.0
             frames = frames.permute(0, 3, 1, 2)
-            frames = F.interpolate(frames, size=(self.size, self.size), mode="bilinear", align_corners=False)
+            frames = F.interpolate(
+                frames,
+                size=(self.size, self.size),
+                mode="bilinear",
+                align_corners=False,
+            )
 
-            mean = torch.tensor([0.45, 0.45, 0.45], dtype=frames.dtype, device=frames.device).view(1, 3, 1, 1)
-            std  = torch.tensor([0.225, 0.225, 0.225], dtype=frames.dtype, device=frames.device).view(1, 3, 1, 1)
+            mean = torch.tensor(
+                [0.45, 0.45, 0.45], dtype=frames.dtype, device=frames.device
+            ).view(1, 3, 1, 1)
+            std = torch.tensor(
+                [0.225, 0.225, 0.225], dtype=frames.dtype, device=frames.device
+            ).view(1, 3, 1, 1)
             frames = (frames - mean) / std
 
             frames = frames.permute(1, 0, 2, 3).contiguous()
@@ -386,12 +307,14 @@ class VideoBagClipsDataset(Dataset):
                 "fps_out": self.fps_out,
                 "sample_stride_frames": self.sample_stride_frames,
                 "total_frames_video": total_frames,
-            }
+            },
         }
+
 
 # -------------------------
 # collate (fixed M -> stack to B,M,...)
 # -------------------------
+
 
 def bag_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     clips_video = torch.stack([x["clips_video"] for x in batch], dim=0)

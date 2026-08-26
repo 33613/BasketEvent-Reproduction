@@ -41,7 +41,7 @@ class SingleVideoPipelineTest(unittest.TestCase):
         project.mkdir()
         for relative in (
             "src/modules/tracking/sam3_tracker.py",
-            "src/modules/identity/resolver.py",
+            "src/modules/identity/service.py",
             "src/modules/event_recognition/inference.py",
             "src/modules/materials/visualization.py",
         ):
@@ -82,8 +82,8 @@ class SingleVideoPipelineTest(unittest.TestCase):
             self.assertEqual(paths.prediction.name, "130_events.json")
             self.assertEqual(paths.visualization.name, "130_overlay.mp4")
 
-    def test_zero_qwen_players_skips_playnet_and_renders_diagnostics(self):
-        """An empty Qwen player set should be reported without pipeline failure."""
+    def test_zero_identity_players_skips_playnet_and_renders_diagnostics(self):
+        """An empty Identity result should be reported without pipeline failure."""
         with tempfile.TemporaryDirectory() as directory:
             paths = self._make_paths(Path(directory))
             paths.create_output_directories()
@@ -110,14 +110,20 @@ class SingleVideoPipelineTest(unittest.TestCase):
             pipeline = SingleVideoPipeline(paths, PipelineConfig())
 
             sam3_command = pipeline._sam3_command()
-            qwen_command = pipeline._qwen_command()
+            identity_command = pipeline._identity_command()
             playnet_command = pipeline._playnet_command()
 
             self.assertIn("--offload-video-to-cpu", sam3_command)
             self.assertIn("--offload-state-to-cpu", sam3_command)
-            self.assertIn(str(paths.qwen_model), qwen_command)
+            self.assertIn(str(paths.qwen_model), identity_command)
             self.assertIn(str(paths.event_checkpoint), playnet_command)
             self.assertIn(str(paths.prediction), playnet_command)
+
+    def test_legacy_qwen_stage_name_maps_to_identity(self):
+        """旧命令中的 qwen 阶段名应兼容映射到完整身份处理阶段。"""
+        config = PipelineConfig(start_at="qwen")
+
+        self.assertEqual(config.start_at, "identity")
 
     def test_visualize_only_uses_existing_tracks_without_playnet(self):
         """Processed tracks should render even when no prediction file exists."""

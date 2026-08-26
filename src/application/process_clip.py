@@ -29,7 +29,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.config import SETTINGS, Settings
 
 
-_STAGE_ORDER = ("sam3", "qwen", "playnet", "visualize")
+_STAGE_ORDER = ("sam3", "identity", "playnet", "visualize")
+_STAGE_ALIASES = {"qwen": "identity"}
 
 
 @dataclass(frozen=True)
@@ -212,7 +213,9 @@ class PipelineConfig:
 
     def __post_init__(self) -> None:
         """Validate parameters before expensive models are constructed."""
-        if self.start_at not in _STAGE_ORDER:
+        normalized_stage = _STAGE_ALIASES.get(self.start_at, self.start_at)
+        object.__setattr__(self, "start_at", normalized_stage)
+        if normalized_stage not in _STAGE_ORDER:
             raise ValueError(f"Unknown start stage: {self.start_at}")
         positive_values = {
             "max_num_objects": self.max_num_objects,
@@ -294,11 +297,11 @@ class SingleVideoPipeline:
             / "modules"
             / "tracking"
             / "sam3_tracker.py",
-            "Qwen recognition module": self.paths.project_root
+            "Identity service module": self.paths.project_root
             / "src"
             / "modules"
             / "identity"
-            / "resolver.py",
+            / "service.py",
             "event-recognition module": self.paths.project_root
             / "src"
             / "modules"
@@ -430,13 +433,13 @@ class SingleVideoPipeline:
             command.append("--offload-state-to-cpu")
         return command
 
-    def _qwen_command(self) -> list[str]:
-        """Build the Qwen trajectory-filtering command."""
+    def _identity_command(self) -> list[str]:
+        """构造 Identity 服务命令；Qwen 只是其中一个证据提供器。"""
         command = [
             sys.executable,
             "-u",
             "-m",
-            "src.modules.identity.resolver",
+            "src.modules.identity.service",
             "--video_path",
             str(self.paths.video),
             "--bbox_json_path",
@@ -550,7 +553,9 @@ class SingleVideoPipeline:
 
         try:
             self._reuse_or_run("sam3", self.paths.raw_tracks, self._sam3_command())
-            self._reuse_or_run("qwen", self.paths.clean_tracks, self._qwen_command())
+            self._reuse_or_run(
+                "identity", self.paths.clean_tracks, self._identity_command()
+            )
 
             if self.config.dry_run:
                 accepted_player_count = None
@@ -581,7 +586,7 @@ class SingleVideoPipeline:
             elif accepted_player_count == 0:
                 self.report["stages"]["playnet"] = {
                     "status": "skipped",
-                    "reason": "Qwen retained no player trajectories",
+                    "reason": "Identity produced no player trajectories",
                 }
                 self._reuse_or_run(
                     "visualize",
@@ -590,8 +595,8 @@ class SingleVideoPipeline:
                 )
                 self.report["status"] = "completed_with_warning"
                 self.report["warning"] = (
-                    "Qwen retained no players; PlayNet was skipped and the "
-                    "overlay contains SAM3/Qwen diagnostics only."
+                    "Identity produced no players; PlayNet was skipped and the "
+                    "overlay contains tracking and identity diagnostics only."
                 )
             else:
                 self._reuse_or_run(
@@ -628,7 +633,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         Parsed command-line namespace.
     """
     parser = argparse.ArgumentParser(
-        description="Run SAM3, Qwen, PlayNet, and visualization for one clip."
+        description="Run tracking, identity, event inference, and visualization."
     )
     parser.add_argument("--game", required=True, help="BARD game directory name.")
     parser.add_argument("--clip", required=True, help="Video stem without .mp4.")
@@ -665,7 +670,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--start-at",
-        choices=_STAGE_ORDER,
+        choices=(*_STAGE_ORDER, *_STAGE_ALIASES),
         default="sam3",
         help="Start at a later stage when earlier outputs already exist.",
     )

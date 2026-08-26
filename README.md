@@ -38,7 +38,7 @@ BasketEvent/
 │       ├── tracking/                 # SAM3 轨迹生成
 │       ├── identity/                 # Qwen 观察与球员身份处理
 │       ├── event_recognition/        # TimeSformer + PlayNet 推理
-│       ├── catalog/                  # 素材登记、查询、统计和 ReID 接口
+│       ├── catalog/                  # 素材登记、查询和统计
 │       └── materials/                # 处理结果可视化
 ├── training/                         # Dataset、Solver 和训练入口
 ├── tests/                            # 单元测试和受控诊断脚本
@@ -73,7 +73,7 @@ BasketEvent/
 python -m training.train --help
 ```
 
-## 素材目录与人物 ReID
+## 素材目录
 
 `src/modules/catalog/` 当前实现一个不依赖数据库的最小业务闭环：
 
@@ -81,9 +81,7 @@ python -m training.train --help
 2. 使用“球衣颜色 + 号码”生成人物检索键；
 3. 支持按事件、人物和置信度查询；
 4. 汇总事件数量、人物数量和平均置信度；
-5. 预留人物 ReID 特征提取接口，并提供余弦相似度聚类基线。
-
-人物 ReID 可以用于同一场比赛不同片段间的人物归并，但不能直接替代 SAM3 或 Qwen。当前只实现了模型无关的 `PersonEmbeddingExtractor` 接口和 `CosineReIdMatcher`，尚未捆绑具体 ReID 权重。后续可接入 OSNet 或 FastReID，把球员截图编码为外观特征，并与球衣号码、颜色和时间连续性共同约束；仅凭外观聚类容易受同队球衣相似、遮挡和转播色彩变化影响。
+5. 保持素材检索与人物身份检索相互独立。
 
 当前目录保存在内存中，主要用于固定产品层接口和单元测试；数据库持久化尚未实现。
 
@@ -91,21 +89,27 @@ python -m training.train --help
 
 ```text
 src/modules/identity/
-├── sampling.py       # TrackSampler：按每条轨迹的有效帧独立取样
-├── qwen_observer.py  # QwenTrackObserver：生成逐帧视觉观察
-├── resolver.py       # IdentityResolver：聚合证据、可选名单检索和命令入口
-├── clustering.py     # CrossClipIdentityClusterer：跨片段人物素材归并
-└── models.py         # 阶段之间传递的中间数据结构
+├── sampling.py          # 单视频轨迹取样
+├── evidence/
+│   ├── base.py          # 统一证据提供器接口
+│   ├── qwen.py          # Qwen 属性观察证据
+│   └── reid.py          # ReID 特征接口与适配器
+├── gallery.py           # 人物身份库接口与内存实现
+├── fusion.py            # 多来源证据融合
+├── association.py       # 跨片段人物编号关联
+├── service.py           # 对外流程接口与命令入口
+└── models.py            # 阶段之间传递的中间数据结构
 ```
 
 Identity 阶段遵循以下边界：
 
 - `TrackSampler` 只负责读取视频和轨迹、产生带原始帧号的截图，不复制短轨迹末帧。
-- `QwenTrackObserver` 只描述每张图是不是场上球员、球衣颜色和号码，不猜球员姓名，也不决定是否删除整条轨迹。
-- `IdentityResolver` 把逐帧证据解析成 `stable`、`mixed`、`unresolved` 或 `invalid`。
-- `mixed` 表示 SAM3 轨迹发生身份切换，必须先按时间拆分；不能用多数票覆盖冲突。
-- `unresolved` 表示已确认是场上球员但号码不可读，仍保留给事件识别，避免旧版硬过滤造成漏检。
-- 比赛名单是可选输入。没有名单时使用“球衣颜色 + 号码”作为人物标识。
+- `QwenTrackObserver` 只描述每张图的场上人物、球衣颜色和号码，不作保留或删除决策。
+- `ReIdTrackEvidenceProvider` 只把多帧人物截图转换为一个归一化外观向量；当前尚未绑定具体 ReID 模型。
+- `IdentityGallery` 是人物档案和相似检索接口，当前使用内存实现，后续由 PostgreSQL + pgvector 实现替换。
+- `IdentityEvidenceFusion` 综合 Qwen、ReID 和人物库候选；单独的 Qwen 失败不会删除 SAM3 轨迹。
+- `CrossClipIdentityAssociator` 为不同片段的轨迹分配稳定 `participant_id`，证据不足时创建匿名人物。
+- `IdentityService` 只编排以上组件，使应用层不依赖具体 Qwen、ReID 或数据库实现。
 
 身份处理会生成两个文件：
 
@@ -167,7 +171,7 @@ python -m src.application.process_clip \
 python -m src.application.process_clip \
   --game bkn-vs-det-0022400861 \
   --clip 100 \
-  --start-at qwen
+  --start-at identity
 ```
 
 只重新生成可视化：
@@ -182,7 +186,7 @@ python -m src.application.process_clip \
 也可以单独运行 Identity 阶段：
 
 ```bash
-python -m src.modules.identity.resolver \
+python -m src.modules.identity.service \
   --video_path /home/fangzilin/data/basket/GAME/video/CLIP.mp4 \
   --bbox_json_path /home/fangzilin/data/basket_artifacts/GAME/tracks/raw/CLIP.json \
   --json_save_path /home/fangzilin/data/basket_artifacts/GAME/tracks/clean/CLIP.json \
@@ -229,7 +233,7 @@ python -m unittest discover -s tests -v
 ## 当前限制
 
 - TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容注意力路径，速度较慢。
-- 跨片段身份仍以球衣颜色和号码为确定性基线；ReID 只有接口和匹配器，尚未接入特征模型。
-- `mixed` 轨迹已经能被发现，但自动确定身份切换边界仍是下一步工作。
+- 人物库当前只有内存实现；ReID 已有统一接口，尚未接入具体特征模型和 PostgreSQL。
+- `conflicting` 轨迹已经能被发现并保留，但自动确定身份切换边界仍是下一步工作。
 - 长视频切分目前是固定窗口基线，还没有使用比赛时钟、文字播报或镜头语义。
 - 作者未公开原始训练视频与完整标签生成过程，作者 checkpoint 仅用于方法链路验证，不能代表在 BARD 上的最终准确率。

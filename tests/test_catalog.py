@@ -1,14 +1,10 @@
-"""验证素材目录和人物 ReID 匹配基线。"""
+"""验证素材目录的登记和查询。"""
 
 from __future__ import annotations
 
 import unittest
 
-from src.modules.catalog import (
-    CosineReIdMatcher,
-    InMemoryMaterialCatalog,
-    MaterialCatalogService,
-)
+from src.modules.catalog import InMemoryMaterialCatalog, MaterialCatalogService
 
 
 class MaterialCatalogServiceTest(unittest.TestCase):
@@ -68,29 +64,6 @@ class MaterialCatalogServiceTest(unittest.TestCase):
         self.service.register_processed_clip(**arguments)
         with self.assertRaises(ValueError):
             self.service.register_processed_clip(**arguments)
-
-
-class CosineReIdMatcherTest(unittest.TestCase):
-    """验证人物外观特征的跨片段归并契约。"""
-
-    def test_similar_embeddings_share_cluster(self) -> None:
-        """相似外观应进入同一人物簇。"""
-        matcher = CosineReIdMatcher(similarity_threshold=0.8)
-        first_id, _ = matcher.assign([1.0, 0.0, 0.0])
-        second_id, similarity = matcher.assign([0.98, 0.05, 0.0])
-        other_id, _ = matcher.assign([0.0, 1.0, 0.0])
-
-        self.assertEqual(first_id, second_id)
-        self.assertGreater(similarity, 0.8)
-        self.assertNotEqual(first_id, other_id)
-
-    def test_conflicting_identity_hints_do_not_merge(self) -> None:
-        """球衣身份冲突时，即使外观相似也不能强制合并。"""
-        matcher = CosineReIdMatcher(similarity_threshold=0.8)
-        first_id, _ = matcher.assign([1.0, 0.0], identity_hint="white#13")
-        second_id, _ = matcher.assign([1.0, 0.0], identity_hint="white#20")
-
-        self.assertNotEqual(first_id, second_id)
 
 
 if __name__ == "__main__":

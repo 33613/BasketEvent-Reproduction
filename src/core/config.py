@@ -93,6 +93,12 @@ class Settings:
             Path("/home/fangzilin/data/basket_runtime"),
         )
     )
+    product_data_root: Path = field(
+        default_factory=lambda: _environment_path(
+            "BASKETEVENT_PRODUCT_DATA_ROOT",
+            Path(__file__).resolve().parents[2] / "product_data",
+        )
+    )
     model_root: Path = field(
         default_factory=lambda: _environment_path(
             "BASKETEVENT_MODEL_ROOT", Path("/home/fangzilin/models")
@@ -136,6 +142,16 @@ class Settings:
     def event_checkpoint(self) -> Path:
         """Return the author-provided BasketEvent recognition checkpoint."""
         return self.model_root / "basketevent" / "playnet.pt"
+
+    @property
+    def product_database_path(self) -> Path:
+        """返回产品人物库与素材库共用的 SQLite 数据库路径。"""
+        return self.product_data_root / "database" / "basketevent.sqlite3"
+
+    @property
+    def product_media_root(self) -> Path:
+        """返回用户视频及生成素材的产品媒体根目录。"""
+        return self.product_data_root / "media"
 
     @property
     def videos_dir(self) -> Path:

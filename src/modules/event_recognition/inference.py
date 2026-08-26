@@ -458,11 +458,17 @@ def build_temporal_prediction_report(
             metadata = {}
         jersey_number = metadata.get("jersey_number")
         jersey_color = metadata.get("jersey_color")
+        participant_id = metadata.get("participant_id")
+        source_track_id = metadata.get("source_track_id")
+        player_name = metadata.get("player_name")
         player_predictions.append(
             {
                 "player_id": player_id,
+                "participant_id": participant_id,
+                "source_track_id": source_track_id,
                 "jersey_number": jersey_number,
                 "jersey_color": jersey_color,
+                "player_name": player_name,
                 "label_id": label_id,
                 "event": event_name,
                 "confidence": confidence,
@@ -499,8 +505,11 @@ def build_temporal_prediction_report(
             temporal_events.append(
                 {
                     "player_id": player_id,
+                    "participant_id": participant_id,
+                    "source_track_id": source_track_id,
                     "jersey_number": jersey_number,
                     "jersey_color": jersey_color,
+                    "player_name": player_name,
                     "label_id": label_id,
                     "event": event_name,
                     "confidence": confidence,

@@ -61,6 +61,10 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# BasketEvent 产品运行数据。目录说明保留在 Git 中，真实数据库与媒体不提交。
+product_data/*
+!product_data/README.md
+
 # Flask stuff:
 instance/
 .webassets-cache

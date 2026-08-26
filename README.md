@@ -26,6 +26,7 @@ BasketEvent/
 │   ├── bard_team_colors.example.json
 │   └── environment/                 # 服务器环境固化文件
 ├── sam3/                            # SAM3 Git 子模块
+├── product_data/                    # 产品数据库与用户媒体（真实内容不提交）
 ├── src/
 │   ├── application/                 # 只编排业务流程，不实现模型细节
 │   │   ├── process_clip.py           # 单个短片完整处理
@@ -38,6 +39,7 @@ BasketEvent/
 │       ├── tracking/                 # SAM3 轨迹生成
 │       ├── identity/                 # Qwen 观察与球员身份处理
 │       ├── event_recognition/        # TimeSformer + PlayNet 推理
+│       ├── database/                 # SQLite 产品人物库和素材库
 │       ├── catalog/                  # 素材登记、查询和统计
 │       └── materials/                # 处理结果可视化
 ├── training/                         # Dataset、Solver 和训练入口
@@ -83,7 +85,31 @@ python -m training.train --help
 4. 汇总事件数量、人物数量和平均置信度；
 5. 保持素材检索与人物身份检索相互独立。
 
-当前目录保存在内存中，主要用于固定产品层接口和单元测试；数据库持久化尚未实现。
+素材接口同时提供内存实现和 SQLite 实现。内存实现用于单元测试，产品运行使用 `src.modules.database.SQLiteMaterialCatalog`。
+
+## 产品数据库
+
+产品数据库与 BARD 数据集完全分开：BARD 只用于模型训练和方法验证；`product_data/` 只保存用户视频处理产生的产品数据。
+
+```text
+product_data/
+├── database/basketevent.sqlite3
+└── media/
+    ├── uploads/
+    ├── segments/
+    └── visualizations/
+```
+
+SQLite 保存人物档案、ReID 参考向量、素材、事件和素材人物关系。MP4 文件仍保存在媒体目录，数据库只记录路径。实际数据库和媒体均被 Git 忽略。
+
+初始化或查看数据库状态：
+
+```bash
+python -m src.modules.database init
+python -m src.modules.database status
+```
+
+数据库模块通过 `SQLiteIdentityGallery` 和 `SQLiteMaterialCatalog` 实现现有业务接口。以后迁移 PostgreSQL 时替换这两个实现，不修改 Identity、PlayNet 或素材服务。
 
 ## Identity 模块
 
@@ -106,7 +132,7 @@ Identity 阶段遵循以下边界：
 - `TrackSampler` 只负责读取视频和轨迹、产生带原始帧号的截图，不复制短轨迹末帧。
 - `QwenTrackObserver` 只描述每张图的场上人物、球衣颜色和号码，不作保留或删除决策。
 - `ReIdTrackEvidenceProvider` 只把多帧人物截图转换为一个归一化外观向量；当前尚未绑定具体 ReID 模型。
-- `IdentityGallery` 是人物档案和相似检索接口，当前使用内存实现，后续由 PostgreSQL + pgvector 实现替换。
+- `IdentityGallery` 是人物档案和相似检索接口，可选择内存实现或 SQLite 持久化实现。
 - `IdentityEvidenceFusion` 综合 Qwen、ReID 和人物库候选；单独的 Qwen 失败不会删除 SAM3 轨迹。
 - `CrossClipIdentityAssociator` 为不同片段的轨迹分配稳定 `participant_id`，证据不足时创建匿名人物。
 - `IdentityService` 只编排以上组件，使应用层不依赖具体 Qwen、ReID 或数据库实现。
@@ -148,6 +174,7 @@ git submodule update --init --recursive
 - `BASKETEVENT_DATA_ROOT`
 - `BASKETEVENT_ARTIFACTS_ROOT`
 - `BASKETEVENT_RUNTIME_ROOT`
+- `BASKETEVENT_PRODUCT_DATA_ROOT`
 - `BASKETEVENT_MODEL_ROOT`
 - `BASKETEVENT_GPU_IDS`
 - `BASKETEVENT_HF_LOCAL_FILES_ONLY`
@@ -233,7 +260,7 @@ python -m unittest discover -s tests -v
 ## 当前限制
 
 - TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容注意力路径，速度较慢。
-- 人物库当前只有内存实现；ReID 已有统一接口，尚未接入具体特征模型和 PostgreSQL。
+- 人物库和素材库已经支持 SQLite；ReID 尚未接入具体特征模型，SQLite 向量检索目前在 Python 中计算。
 - `conflicting` 轨迹已经能被发现并保留，但自动确定身份切换边界仍是下一步工作。
 - 长视频切分目前是固定窗口基线，还没有使用比赛时钟、文字播报或镜头语义。
 - 作者未公开原始训练视频与完整标签生成过程，作者 checkpoint 仅用于方法链路验证，不能代表在 BARD 上的最终准确率。

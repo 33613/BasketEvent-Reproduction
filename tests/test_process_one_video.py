@@ -40,10 +40,10 @@ class SingleVideoPipelineTest(unittest.TestCase):
         project = root / "project"
         project.mkdir()
         for relative in (
-            "track_one_video.py",
-            "recognize.py",
-            "inference.py",
-            "local_script/visualize_qwen_tracks.py",
+            "src/modules/tracking/sam3_tracker.py",
+            "src/modules/identity/qwen_recognizer.py",
+            "src/modules/event_recognition/inference.py",
+            "src/modules/materials/visualization.py",
         ):
             path = project / relative
             path.parent.mkdir(parents=True, exist_ok=True)

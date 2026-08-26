@@ -1,4 +1,4 @@
-"""Backward-compatible import path for central BasketEvent configuration."""
+"""Shared configuration and cross-module primitives."""
 
 from src.core.config import SETTINGS, Settings
 

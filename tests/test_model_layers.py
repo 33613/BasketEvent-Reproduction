@@ -9,9 +9,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import src.model as model_module
-from src.layer import BBoxEmbedding, GatedClipPooling
-from src.model import PlayerEventModel
+import src.model as legacy_model_module
+import src.modules.event_recognition.playnet.model as model_module
+from src.modules.event_recognition.playnet.layers import BBoxEmbedding, GatedClipPooling
+from src.modules.event_recognition.playnet.model import PlayerEventModel
 
 
 class FakeBackbone(nn.Module):
@@ -91,7 +92,7 @@ class PlayerEventModelAssemblyTest(unittest.TestCase):
 
     def test_layer_symbols_remain_import_compatible(self) -> None:
         """Existing imports from src.model should resolve to src.layer classes."""
-        self.assertIs(model_module.BBoxEmbedding, BBoxEmbedding)
+        self.assertIs(legacy_model_module.BBoxEmbedding, BBoxEmbedding)
 
     def test_forward_contract_and_strict_checkpoint_round_trip(self) -> None:
         """The assembled model must keep output shapes and strict state keys."""

@@ -28,7 +28,6 @@ class ParticipantReference:
     jersey_number: str | None = None
     player_name: str | None = None
     identity_status: str | None = None
-    reid_cluster_id: str | None = None
 
 
 @dataclass(frozen=True)

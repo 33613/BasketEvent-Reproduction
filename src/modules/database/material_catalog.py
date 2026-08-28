@@ -70,7 +70,6 @@ class SQLiteMaterialCatalog:
                     jersey_number=value["jersey_number"],
                     player_name=value["player_name"],
                     identity_status=value["identity_status"],
-                    reid_cluster_id=value["reid_cluster_id"],
                 )
                 for value in participant_rows
             ),
@@ -136,9 +135,8 @@ class SQLiteMaterialCatalog:
                     """
                     INSERT INTO material_participants(
                         material_id, participant_id, track_id, jersey_color,
-                        jersey_number, player_name, identity_status,
-                        reid_cluster_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        jersey_number, player_name, identity_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -149,7 +147,6 @@ class SQLiteMaterialCatalog:
                             participant.jersey_number,
                             participant.player_name,
                             participant.identity_status,
-                            participant.reid_cluster_id,
                         )
                         for participant in item.participants
                     ],

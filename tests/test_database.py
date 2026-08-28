@@ -5,8 +5,7 @@ import unittest
 from pathlib import Path
 
 from src.modules.catalog import MaterialCatalogService
-from src.modules.database import ProductDatabase
-from src.modules.identity.models import IdentityProfile
+from src.modules.database import ParticipantRecord, ProductDatabase
 
 
 class ProductDatabaseTest(unittest.TestCase):
@@ -25,37 +24,26 @@ class ProductDatabaseTest(unittest.TestCase):
             self.assertTrue(product.storage.visualizations_dir.is_dir())
             self.assertEqual(product.status()["schema_version"], 1)
 
-    def test_identity_profile_and_embedding_survive_reopen(self):
-        """人物档案和 ReID 向量应在不同进程式对象之间持续存在。"""
+    def test_participant_record_survives_reopen(self):
+        """最小人物档案应在重新打开数据库后仍可按球衣属性查询。"""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "product_data"
             product = ProductDatabase.open(root)
-            profile = IdentityProfile(
+            profile = ParticipantRecord(
                 participant_id="person_test_20",
                 display_name=None,
                 jersey_color="white",
                 jersey_number="20",
                 metadata={"source": "test"},
             )
-            product.identity_gallery.save(profile)
-            product.identity_gallery.add_embedding(
-                profile.participant_id,
-                [3.0, 4.0],
-                model_name="test-reid",
-                source_track_id="clip_100/player_8",
-            )
+            product.participants.save(profile)
 
             reopened = ProductDatabase.open(root)
-            attribute_matches = reopened.identity_gallery.search_by_attributes(
+            attribute_matches = reopened.participants.find_by_jersey(
                 "white", "20"
-            )
-            embedding_matches = reopened.identity_gallery.search_by_embedding(
-                [0.6, 0.8]
             )
 
             self.assertEqual(attribute_matches[0].participant_id, "person_test_20")
-            self.assertEqual(embedding_matches[0].participant_id, "person_test_20")
-            self.assertAlmostEqual(embedding_matches[0].score, 1.0)
 
     def test_material_service_persists_identity_and_event_lookup(self):
         """产品素材应保留稳定人物编号，并支持事件与人物组合检索。"""

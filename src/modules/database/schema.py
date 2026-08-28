@@ -21,22 +21,6 @@ CREATE TABLE IF NOT EXISTS participants (
 CREATE INDEX IF NOT EXISTS idx_participants_jersey
     ON participants (jersey_color, jersey_number);
 
-CREATE TABLE IF NOT EXISTS participant_embeddings (
-    embedding_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    participant_id TEXT NOT NULL,
-    dimension INTEGER NOT NULL,
-    embedding_json TEXT NOT NULL,
-    model_name TEXT,
-    source_track_id TEXT,
-    quality_score REAL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (participant_id)
-        REFERENCES participants (participant_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_embeddings_participant
-    ON participant_embeddings (participant_id);
-
 CREATE TABLE IF NOT EXISTS materials (
     material_id TEXT PRIMARY KEY,
     source_video_id TEXT NOT NULL,
@@ -78,7 +62,6 @@ CREATE TABLE IF NOT EXISTS material_participants (
     jersey_number TEXT,
     player_name TEXT,
     identity_status TEXT,
-    reid_cluster_id TEXT,
     PRIMARY KEY (material_id, participant_id, track_id),
     FOREIGN KEY (material_id)
         REFERENCES materials (material_id) ON DELETE CASCADE

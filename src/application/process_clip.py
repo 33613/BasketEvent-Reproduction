@@ -434,7 +434,7 @@ class SingleVideoPipeline:
         return command
 
     def _identity_command(self) -> list[str]:
-        """构造 Identity 服务命令；Qwen 只是其中一个证据提供器。"""
+        """构造取样、Qwen 观察和固定规则解析命令。"""
         command = [
             sys.executable,
             "-u",
@@ -446,6 +446,8 @@ class SingleVideoPipeline:
             str(self.paths.raw_tracks),
             "--json_save_path",
             str(self.paths.clean_tracks),
+            "--game_id",
+            self.paths.game_id,
             "--gpus_to_use",
             self.config.qwen_gpus,
             "--qwen_model",

@@ -10,8 +10,8 @@ from typing import Sequence
 
 from src.core.config import SETTINGS
 from src.modules.database.connection import SQLiteDatabase
-from src.modules.database.identity_gallery import SQLiteIdentityGallery
 from src.modules.database.material_catalog import SQLiteMaterialCatalog
+from src.modules.database.participants import SQLiteParticipantRepository
 
 
 @dataclass(frozen=True)
@@ -57,13 +57,13 @@ class ProductStorageLayout:
 
 
 class ProductDatabase:
-    """统一暴露人物库和素材库，不让应用层依赖 SQLite 细节。"""
+    """统一暴露人物档案和素材库，不让应用层依赖 SQLite 细节。"""
 
     def __init__(self, storage: ProductStorageLayout) -> None:
         """根据产品目录构造数据库及两个持久化仓库。"""
         self.storage = storage
         self.database = SQLiteDatabase(storage.database_path)
-        self.identity_gallery = SQLiteIdentityGallery(self.database)
+        self.participants = SQLiteParticipantRepository(self.database)
         self.material_catalog = SQLiteMaterialCatalog(self.database)
 
     @classmethod
@@ -86,7 +86,6 @@ class ProductDatabase:
                 )
                 for table in (
                     "participants",
-                    "participant_embeddings",
                     "materials",
                     "material_events",
                     "material_participants",

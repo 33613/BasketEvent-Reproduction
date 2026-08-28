@@ -8,7 +8,6 @@ from typing import Any, Mapping, Sequence
 
 from src.modules.identity.models import (
     BallCandidate,
-    IdentityEvidence,
     IdentityObservation,
     TrackCrop,
 )
@@ -153,25 +152,6 @@ Return STRICT JSON only:
         content.append({"type": "text", "text": self.build_prompt(crops)})
         output_text = self._generate([{"role": "user", "content": content}], 512)
         return self.parse_observations(crops, output_text)
-
-    def collect(self, crops: Sequence[TrackCrop]) -> IdentityEvidence:
-        """把逐帧 Qwen 观察包装成统一的单轨迹证据。"""
-        if not crops:
-            raise ValueError("Qwen 至少需要一张轨迹截图")
-        observations = tuple(self.observe(crops))
-        confidence = (
-            sum(item.confidence for item in observations) / len(observations)
-            if observations
-            else 0.0
-        )
-        return IdentityEvidence(
-            source=self.source,
-            track_id=crops[0].track_id,
-            confidence=confidence,
-            observations=observations,
-            frame_indices=tuple(crop.frame_index for crop in crops),
-            metadata={"crop_count": len(crops)},
-        )
 
     @staticmethod
     def parse_observations(

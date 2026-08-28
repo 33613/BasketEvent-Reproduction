@@ -11,7 +11,7 @@
   → SAM3 球员与篮球轨迹
   → 轨迹截图取样
   → Qwen 逐帧视觉观察
-  → 身份解析与跨片段归并
+  → 固定规则身份解析
   → TimeSformer + PlayNet 事件识别
   → 素材登记、检索与统计
 ```
@@ -100,7 +100,7 @@ product_data/
     └── visualizations/
 ```
 
-SQLite 保存人物档案、ReID 参考向量、素材、事件和素材人物关系。MP4 文件仍保存在媒体目录，数据库只记录路径。实际数据库和媒体均被 Git 忽略。
+SQLite 保存最小人物档案、素材、事件和素材人物关系。MP4 文件仍保存在媒体目录，数据库只记录路径。实际数据库和媒体均被 Git 忽略。
 
 初始化或查看数据库状态：
 
@@ -109,20 +109,15 @@ python -m src.modules.database init
 python -m src.modules.database status
 ```
 
-数据库模块通过 `SQLiteIdentityGallery` 和 `SQLiteMaterialCatalog` 实现现有业务接口。以后迁移 PostgreSQL 时替换这两个实现，不修改 Identity、PlayNet 或素材服务。
+数据库模块通过 `SQLiteParticipantRepository` 和 `SQLiteMaterialCatalog` 封装持久化操作。以后迁移 PostgreSQL 时替换仓库实现，不修改 PlayNet 或素材服务。
 
 ## Identity 模块
 
 ```text
 src/modules/identity/
 ├── sampling.py          # 单视频轨迹取样
-├── evidence/
-│   ├── base.py          # 统一证据提供器接口
-│   ├── qwen.py          # Qwen 属性观察证据
-│   └── reid.py          # ReID 特征接口与适配器
-├── gallery.py           # 人物身份库接口与内存实现
-├── fusion.py            # 多来源证据融合
-├── association.py       # 跨片段人物编号关联
+├── qwen_observer.py     # Qwen 逐帧属性观察
+├── resolver.py          # 固定身份解析规则和可选名单查询
 ├── service.py           # 对外流程接口与命令入口
 └── models.py            # 阶段之间传递的中间数据结构
 ```
@@ -131,11 +126,10 @@ Identity 阶段遵循以下边界：
 
 - `TrackSampler` 只负责读取视频和轨迹、产生带原始帧号的截图，不复制短轨迹末帧。
 - `QwenTrackObserver` 只描述每张图的场上人物、球衣颜色和号码，不作保留或删除决策。
-- `ReIdTrackEvidenceProvider` 只把多帧人物截图转换为一个归一化外观向量；当前尚未绑定具体 ReID 模型。
-- `IdentityGallery` 是人物档案和相似检索接口，可选择内存实现或 SQLite 持久化实现。
-- `IdentityEvidenceFusion` 综合 Qwen、ReID 和人物库候选；单独的 Qwen 失败不会删除 SAM3 轨迹。
-- `CrossClipIdentityAssociator` 为不同片段的轨迹分配稳定 `participant_id`，证据不足时创建匿名人物。
-- `IdentityService` 只编排以上组件，使应用层不依赖具体 Qwen、ReID 或数据库实现。
+- `IdentityResolver` 使用固定规则：唯一颜色号码组合为 `identified`，多个组合为 `conflicting`，没有完整组合为 `anonymous`。
+- 三种结果都保留 SAM3 轨迹；确定身份使用“比赛 + 颜色 + 号码”作为编号，其他情况使用“比赛 + 片段 + 轨迹”匿名编号。
+- 可选名单只补充姓名，不决定是否保留轨迹。
+- `IdentityService` 按“取样 → Qwen 观察 → 规则解析”的顺序编排，不包含尚未落地的 ReID 或向量融合逻辑。
 
 身份处理会生成两个文件：
 
@@ -260,7 +254,7 @@ python -m unittest discover -s tests -v
 ## 当前限制
 
 - TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容注意力路径，速度较慢。
-- 人物库和素材库已经支持 SQLite；ReID 尚未接入具体特征模型，SQLite 向量检索目前在 Python 中计算。
+- 当前最小方案不包含 ReID 和跨片段外观归并；先以比赛内球衣颜色与号码生成检索编号。
 - `conflicting` 轨迹已经能被发现并保留，但自动确定身份切换边界仍是下一步工作。
 - 长视频切分目前是固定窗口基线，还没有使用比赛时钟、文字播报或镜头语义。
 - 作者未公开原始训练视频与完整标签生成过程，作者 checkpoint 仅用于方法链路验证，不能代表在 BARD 上的最终准确率。

@@ -1,18 +1,13 @@
-"""提供产品人物库、素材库和 SQLite 存储服务。"""
+"""提供产品人物和素材的 SQLite 存储。"""
 
-from src.modules.database.connection import SQLiteDatabase
-from src.modules.database.material_catalog import SQLiteMaterialCatalog
-from src.modules.database.participants import (
+from src.modules.database.sqlite import (
     ParticipantRecord,
-    SQLiteParticipantRepository,
+    ProductDatabase,
+    ProductStorageLayout,
 )
-from src.modules.database.service import ProductDatabase, ProductStorageLayout
 
 __all__ = [
     "ProductDatabase",
     "ProductStorageLayout",
-    "SQLiteDatabase",
-    "SQLiteMaterialCatalog",
     "ParticipantRecord",
-    "SQLiteParticipantRepository",
 ]

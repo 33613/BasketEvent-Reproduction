@@ -39,8 +39,8 @@ BasketEvent/
 │       ├── tracking/                 # SAM3 轨迹生成
 │       ├── identity/                 # Qwen 观察与球员身份处理
 │       ├── event_recognition/        # TimeSformer + PlayNet 推理
-│       ├── database/                 # SQLite 产品人物库和素材库
-│       ├── catalog/                  # 素材登记、查询和统计
+│       ├── database/                 # SQLite 保存与查询
+│       ├── catalog/                  # 素材对象整理与统计
 │       └── materials/                # 处理结果可视化
 ├── training/                         # Dataset、Solver 和训练入口
 ├── tests/                            # 单元测试和受控诊断脚本
@@ -77,15 +77,21 @@ python -m training.train --help
 
 ## 素材目录
 
-`src/modules/catalog/` 当前实现一个不依赖数据库的最小业务闭环：
+`src/modules/catalog/` 只做内存中的数据整理，不连接数据库：
 
-1. 把片段时间范围、Identity 结果和 PlayNet 预测组合成统一 `CatalogItem`；
-2. 使用“球衣颜色 + 号码”生成人物检索键；
-3. 支持按事件、人物和置信度查询；
-4. 汇总事件数量、人物数量和平均置信度；
-5. 保持素材检索与人物身份检索相互独立。
+1. `models.py` 定义素材、事件、人物引用和统计结果；
+2. `CatalogService.build_material()` 把片段范围、Identity 结果和 PlayNet 预测组合成 `CatalogItem`；
+3. `CatalogService.summarize_reports()` 汇总事件数量、人物数量和平均置信度。
 
-素材接口同时提供内存实现和 SQLite 实现。内存实现用于单元测试，产品运行使用 `src.modules.database.SQLiteMaterialCatalog`。
+人物检索键优先使用已有稳定编号；没有稳定编号时使用“球衣颜色 + 号码”。`catalog` 不保存数据，也不包含内存仓库或数据库抽象。完整的调用顺序是：
+
+```python
+item = CatalogService().build_material(...)
+database.save_material(item)
+matches = database.find_materials(event="ast")
+```
+
+这样素材整理规则与 SQLite 读写职责分开，但没有多余的接口层。
 
 ## 产品数据库
 
@@ -102,6 +108,14 @@ product_data/
 
 SQLite 保存最小人物档案、素材、事件和素材人物关系。MP4 文件仍保存在媒体目录，数据库只记录路径。实际数据库和媒体均被 Git 忽略。
 
+`src/modules/database/` 只有三个职责明确的文件：
+
+- `schema.py`：表结构和版本号；
+- `sqlite.py`：`ProductDatabase` 及人物、素材的 CRUD；
+- `__main__.py`：初始化和状态查看命令。
+
+当前产品只使用 SQLite，因此不再为尚未使用的 PostgreSQL 或内存后端保留 Protocol、Repository 和多层包装。若将来确认需要迁移数据库，再从 `ProductDatabase` 的公开方法提取接口。
+
 初始化或查看数据库状态：
 
 ```bash
@@ -109,7 +123,7 @@ python -m src.modules.database init
 python -m src.modules.database status
 ```
 
-数据库模块通过 `SQLiteParticipantRepository` 和 `SQLiteMaterialCatalog` 封装持久化操作。以后迁移 PostgreSQL 时替换仓库实现，不修改 PlayNet 或素材服务。
+常用代码入口为 `save_participant()`、`find_participants_by_jersey()`、`save_material()` 和 `find_materials()`。
 
 ## Identity 模块
 

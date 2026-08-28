@@ -1,23 +1,22 @@
-"""验证素材目录的登记和查询。"""
+"""验证模型输出可以整理为统一素材对象。"""
 
 from __future__ import annotations
 
 import unittest
 
-from src.modules.catalog import InMemoryMaterialCatalog, MaterialCatalogService
+from src.modules.catalog import CatalogService
 
 
-class MaterialCatalogServiceTest(unittest.TestCase):
-    """验证处理结果可以被规范化并检索。"""
+class CatalogServiceTest(unittest.TestCase):
+    """验证处理结果可以被规范化。"""
 
     def setUp(self) -> None:
-        """为每个测试创建独立的内存目录。"""
-        self.catalog = InMemoryMaterialCatalog()
-        self.service = MaterialCatalogService(self.catalog)
+        """为每个测试创建无状态素材服务。"""
+        self.service = CatalogService()
 
-    def test_register_and_query_processed_clip(self) -> None:
-        """人物级事件应同时支持按事件和球衣身份查询。"""
-        item = self.service.register_processed_clip(
+    def test_build_processed_clip(self) -> None:
+        """人物级事件应整理为事件和球衣身份。"""
+        item = self.service.build_material(
             source_video_id="game-001",
             segment_id="clip-100",
             video_path="clips/100.mp4",
@@ -48,22 +47,19 @@ class MaterialCatalogServiceTest(unittest.TestCase):
         self.assertEqual(item.material_id, "game-001:clip-100")
         self.assertEqual(item.duration_seconds, 12.0)
         self.assertEqual(item.participants[0].participant_id, "white#20")
-        self.assertEqual(self.catalog.query(event="ast"), [item])
-        self.assertEqual(self.catalog.query(participant_id="white#20"), [item])
+        self.assertEqual(item.events[0].event, "ast")
 
-    def test_duplicate_material_is_rejected(self) -> None:
-        """同一来源和片段不能在未声明覆盖时重复登记。"""
-        arguments = {
-            "source_video_id": "game-001",
-            "segment_id": "clip-100",
-            "video_path": "clips/100.mp4",
-            "start_seconds": 0.0,
-            "end_seconds": 12.0,
-            "prediction_report": {"player_predictions": [], "temporal_events": []},
-        }
-        self.service.register_processed_clip(**arguments)
+    def test_invalid_time_range_is_rejected(self) -> None:
+        """素材结束时间不能早于开始时间。"""
         with self.assertRaises(ValueError):
-            self.service.register_processed_clip(**arguments)
+            self.service.build_material(
+                source_video_id="game-001",
+                segment_id="clip-100",
+                video_path="clips/100.mp4",
+                start_seconds=12.0,
+                end_seconds=0.0,
+                prediction_report={"player_predictions": [], "temporal_events": []},
+            )
 
 
 if __name__ == "__main__":

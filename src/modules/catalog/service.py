@@ -1,24 +1,26 @@
-"""把处理结果登记为可按事件和人物检索的视频素材。"""
+"""把模型输出整理成素材记录，并生成简单统计。"""
 
 from __future__ import annotations
 
+import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from src.modules.catalog.models import CatalogItem, EventTag, ParticipantReference
-from src.modules.catalog.repository import MaterialCatalog
+from src.modules.catalog.models import (
+    CatalogItem,
+    EventTag,
+    MaterialStatistics,
+    ParticipantReference,
+)
 
 
-class MaterialCatalogService:
-    """把切分信息、身份结果和 PlayNet 预测组合成素材记录。"""
-
-    def __init__(self, catalog: MaterialCatalog) -> None:
-        """注入素材目录，避免业务服务绑定具体数据库。"""
-        self.catalog = catalog
+class CatalogService:
+    """负责素材数据整理，不负责数据库读写。"""
 
     @staticmethod
     def _participant_id(prediction: Mapping[str, Any]) -> str:
-        """优先使用 Identity 的稳定编号，缺失时再生成临时检索键。"""
+        """从预测结果得到可检索的人物编号。"""
         stable_id = str(prediction.get("participant_id") or "").strip()
         if stable_id:
             return stable_id
@@ -28,7 +30,16 @@ class MaterialCatalogService:
             return f"{color}#{number}"
         return str(prediction.get("player_id") or f"{color}#unknown")
 
-    def register_processed_clip(
+    @staticmethod
+    def _participant_label(prediction: Mapping[str, Any]) -> str:
+        """生成统计页面使用的球衣标签。"""
+        color = str(prediction.get("jersey_color") or "unknown").lower()
+        number = prediction.get("jersey_number")
+        if number is not None and str(number).strip():
+            return f"{color} #{str(number).strip()}"
+        return str(prediction.get("player_id") or f"{color} unknown")
+
+    def build_material(
         self,
         *,
         source_video_id: str,
@@ -39,11 +50,11 @@ class MaterialCatalogService:
         prediction_report: Mapping[str, Any],
         identity_report: Mapping[str, Any] | None = None,
         metadata: Mapping[str, Any] | None = None,
-        replace: bool = False,
     ) -> CatalogItem:
-        """登记一个完成事件推理的片段并返回规范化素材。"""
+        """把一个片段的身份结果和事件结果整理成素材对象。"""
         if end_seconds < start_seconds:
             raise ValueError("end_seconds 不能小于 start_seconds")
+
         predictions = prediction_report.get("player_predictions", [])
         temporal_events = prediction_report.get("temporal_events", [])
         if not isinstance(predictions, Sequence) or isinstance(
@@ -55,79 +66,38 @@ class MaterialCatalogService:
         ):
             raise ValueError("temporal_events 必须是列表")
 
-        identity_by_source: dict[str, Mapping[str, Any]] = {}
+        identity_by_track: dict[str, Mapping[str, Any]] = {}
         if isinstance(identity_report, Mapping):
-            for value in identity_report.get("resolutions", []):
-                if isinstance(value, Mapping) and value.get("track_id") is not None:
-                    identity_by_source[str(value["track_id"])] = value
+            resolutions = identity_report.get("resolutions", [])
+            if isinstance(resolutions, Sequence) and not isinstance(
+                resolutions, (str, bytes)
+            ):
+                for value in resolutions:
+                    if isinstance(value, Mapping) and value.get("track_id") is not None:
+                        identity_by_track[str(value["track_id"])] = value
 
         participants: dict[str, ParticipantReference] = {}
-        for raw_prediction in predictions:
-            if not isinstance(raw_prediction, Mapping):
+        for prediction in predictions:
+            if not isinstance(prediction, Mapping):
                 continue
-            track_id = str(raw_prediction.get("player_id") or "unknown")
-            participant_id = self._participant_id(raw_prediction)
-            identity = identity_by_source.get(track_id, {})
+            track_id = str(prediction.get("player_id") or "unknown")
+            participant_id = self._participant_id(prediction)
+            identity = identity_by_track.get(track_id, {})
             participants[participant_id] = ParticipantReference(
                 participant_id=participant_id,
                 track_id=track_id,
-                jersey_color=raw_prediction.get("jersey_color"),
+                jersey_color=prediction.get("jersey_color"),
                 jersey_number=(
-                    str(raw_prediction["jersey_number"])
-                    if raw_prediction.get("jersey_number") is not None
+                    str(prediction["jersey_number"])
+                    if prediction.get("jersey_number") is not None
                     else None
                 ),
-                player_name=raw_prediction.get("player_name"),
+                player_name=prediction.get("player_name"),
                 identity_status=identity.get("status"),
             )
 
-        events: list[EventTag] = []
-        for raw_event in temporal_events:
-            if not isinstance(raw_event, Mapping):
-                continue
-            event_name = str(raw_event.get("event") or "blank")
-            if event_name == "blank":
-                continue
-            events.append(
-                EventTag(
-                    event=event_name,
-                    confidence=float(raw_event.get("confidence") or 0.0),
-                    player_id=(
-                        str(raw_event["player_id"])
-                        if raw_event.get("player_id") is not None
-                        else None
-                    ),
-                    start_seconds=(
-                        float(raw_event["start_time"])
-                        if raw_event.get("start_time") is not None
-                        else None
-                    ),
-                    end_seconds=(
-                        float(raw_event["end_time"])
-                        if raw_event.get("end_time") is not None
-                        else None
-                    ),
-                )
-            )
-        if not events:
-            for raw_prediction in predictions:
-                if not isinstance(raw_prediction, Mapping):
-                    continue
-                event_name = str(raw_prediction.get("event") or "blank")
-                if event_name != "blank":
-                    events.append(
-                        EventTag(
-                            event=event_name,
-                            confidence=float(raw_prediction.get("confidence") or 0.0),
-                            player_id=(
-                                str(raw_prediction["player_id"])
-                                if raw_prediction.get("player_id") is not None
-                                else None
-                            ),
-                        )
-                    )
-
-        item = CatalogItem(
+        events = self._build_events(predictions, temporal_events)
+        return CatalogItem(
             material_id=f"{source_video_id}:{segment_id}",
             source_video_id=source_video_id,
             segment_id=segment_id,
@@ -135,9 +105,117 @@ class MaterialCatalogService:
             start_seconds=float(start_seconds),
             end_seconds=float(end_seconds),
             processing_status="ready" if events else "ready_without_event",
-            events=tuple(events),
+            events=events,
             participants=tuple(participants.values()),
             metadata=dict(metadata or {}),
         )
-        self.catalog.add(item, replace=replace)
-        return item
+
+    @staticmethod
+    def _build_events(
+        predictions: Sequence[Any], temporal_events: Sequence[Any]
+    ) -> tuple[EventTag, ...]:
+        """优先读取时序事件；缺失时回退到球员级预测。"""
+        events: list[EventTag] = []
+        for value in temporal_events:
+            if not isinstance(value, Mapping):
+                continue
+            event_name = str(value.get("event") or "blank")
+            if event_name == "blank":
+                continue
+            events.append(
+                EventTag(
+                    event=event_name,
+                    confidence=float(value.get("confidence") or 0.0),
+                    player_id=(
+                        str(value["player_id"])
+                        if value.get("player_id") is not None
+                        else None
+                    ),
+                    start_seconds=(
+                        float(value["start_time"])
+                        if value.get("start_time") is not None
+                        else None
+                    ),
+                    end_seconds=(
+                        float(value["end_time"])
+                        if value.get("end_time") is not None
+                        else None
+                    ),
+                )
+            )
+        if events:
+            return tuple(events)
+
+        for value in predictions:
+            if not isinstance(value, Mapping):
+                continue
+            event_name = str(value.get("event") or "blank")
+            if event_name == "blank":
+                continue
+            events.append(
+                EventTag(
+                    event=event_name,
+                    confidence=float(value.get("confidence") or 0.0),
+                    player_id=(
+                        str(value["player_id"])
+                        if value.get("player_id") is not None
+                        else None
+                    ),
+                )
+            )
+        return tuple(events)
+
+    def summarize_reports(
+        self, reports: Sequence[Mapping[str, Any]]
+    ) -> MaterialStatistics:
+        """汇总 PlayNet 报告中的事件、人物和置信度。"""
+        event_counts: Counter[str] = Counter()
+        participant_counts: Counter[str] = Counter()
+        confidences: list[float] = []
+        prediction_count = 0
+        non_background_count = 0
+        temporal_event_count = 0
+
+        for report in reports:
+            predictions = report.get("player_predictions", [])
+            temporal_events = report.get("temporal_events", [])
+            if not isinstance(predictions, list):
+                raise ValueError("player_predictions 必须是列表")
+            if not isinstance(temporal_events, list):
+                raise ValueError("temporal_events 必须是列表")
+            temporal_event_count += len(temporal_events)
+            for prediction in predictions:
+                if not isinstance(prediction, Mapping):
+                    raise ValueError("每条球员预测必须是对象")
+                prediction_count += 1
+                event = str(prediction.get("event") or "unknown")
+                event_counts[event] += 1
+                participant_counts[self._participant_label(prediction)] += 1
+                if event != "blank":
+                    non_background_count += 1
+                confidence = prediction.get("confidence")
+                if isinstance(confidence, (int, float)):
+                    confidences.append(float(confidence))
+
+        mean_confidence = sum(confidences) / len(confidences) if confidences else None
+        return MaterialStatistics(
+            clip_count=len(reports),
+            player_prediction_count=prediction_count,
+            non_background_prediction_count=non_background_count,
+            temporal_event_count=temporal_event_count,
+            mean_confidence=mean_confidence,
+            event_counts=dict(sorted(event_counts.items())),
+            participant_counts=dict(sorted(participant_counts.items())),
+        )
+
+    def summarize_files(self, report_paths: Sequence[str | Path]) -> MaterialStatistics:
+        """读取多个预测 JSON 文件并汇总。"""
+        reports: list[Mapping[str, Any]] = []
+        for path_value in report_paths:
+            path = Path(path_value).expanduser()
+            with path.open("r", encoding="utf-8") as file:
+                value = json.load(file)
+            if not isinstance(value, Mapping):
+                raise ValueError(f"预测报告根节点必须是对象：{path}")
+            reports.append(value)
+        return self.summarize_reports(reports)

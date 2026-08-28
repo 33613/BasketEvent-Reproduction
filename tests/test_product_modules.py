@@ -12,7 +12,7 @@ from src.application.process_video import (
     LongVideoProcessingConfig,
 )
 from src.modules.ingestion import VideoAsset
-from src.modules.catalog import MaterialStatisticsService
+from src.modules.catalog import CatalogService
 from src.modules.segmentation import LongVideoSegmenter
 
 
@@ -99,7 +99,7 @@ class LongVideoProcessingApplicationTest(unittest.TestCase):
             self.assertEqual(ingestion.inputs, [Path("uploaded-game.mp4")])
 
 
-class MaterialStatisticsServiceTest(unittest.TestCase):
+class CatalogStatisticsTest(unittest.TestCase):
     """Verify processed clips become simple catalog statistics."""
 
     def test_events_and_jersey_numbers_are_counted(self) -> None:
@@ -126,7 +126,7 @@ class MaterialStatisticsServiceTest(unittest.TestCase):
             }
         ]
 
-        result = MaterialStatisticsService().summarize(reports)
+        result = CatalogService().summarize_reports(reports)
 
         self.assertEqual(result.clip_count, 1)
         self.assertEqual(result.non_background_prediction_count, 2)

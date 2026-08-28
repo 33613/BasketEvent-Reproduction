@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.modules.catalog import MaterialCatalogService
+from src.modules.catalog import CatalogService
 from src.modules.database import ParticipantRecord, ProductDatabase
 
 
@@ -36,12 +36,10 @@ class ProductDatabaseTest(unittest.TestCase):
                 jersey_number="20",
                 metadata={"source": "test"},
             )
-            product.participants.save(profile)
+            product.save_participant(profile)
 
             reopened = ProductDatabase.open(root)
-            attribute_matches = reopened.participants.find_by_jersey(
-                "white", "20"
-            )
+            attribute_matches = reopened.find_participants_by_jersey("white", "20")
 
             self.assertEqual(attribute_matches[0].participant_id, "person_test_20")
 
@@ -50,7 +48,7 @@ class ProductDatabaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "product_data"
             product = ProductDatabase.open(root)
-            service = MaterialCatalogService(product.material_catalog)
+            service = CatalogService()
             prediction = {
                 "player_predictions": [
                     {
@@ -73,7 +71,7 @@ class ProductDatabaseTest(unittest.TestCase):
                 ],
             }
 
-            service.register_processed_clip(
+            item = service.build_material(
                 source_video_id="upload_001",
                 segment_id="segment_0001",
                 video_path=product.storage.segments_dir / "segment_0001.mp4",
@@ -82,9 +80,10 @@ class ProductDatabaseTest(unittest.TestCase):
                 prediction_report=prediction,
                 metadata={"source": "user_upload"},
             )
+            product.save_material(item)
 
             reopened = ProductDatabase.open(root)
-            matches = reopened.material_catalog.query(
+            matches = reopened.find_materials(
                 event="ast",
                 participant_id="person_test_20",
                 minimum_confidence=0.9,
@@ -96,6 +95,22 @@ class ProductDatabaseTest(unittest.TestCase):
                 matches[0].participants[0].participant_id, "person_test_20"
             )
             self.assertEqual(reopened.status()["counts"]["materials"], 1)
+
+    def test_duplicate_material_is_rejected(self):
+        """数据库默认拒绝覆盖同一素材编号。"""
+        with tempfile.TemporaryDirectory() as directory:
+            product = ProductDatabase.open(Path(directory) / "product_data")
+            item = CatalogService().build_material(
+                source_video_id="game-001",
+                segment_id="clip-100",
+                video_path="clips/100.mp4",
+                start_seconds=0.0,
+                end_seconds=12.0,
+                prediction_report={"player_predictions": [], "temporal_events": []},
+            )
+            product.save_material(item)
+            with self.assertRaises(ValueError):
+                product.save_material(item)
 
 
 if __name__ == "__main__":

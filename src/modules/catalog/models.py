@@ -56,3 +56,20 @@ class CatalogItem:
         value["video_path"] = str(self.video_path)
         value["duration_seconds"] = self.duration_seconds
         return value
+
+
+@dataclass(frozen=True)
+class MaterialStatistics:
+    """保存一组 PlayNet 预测报告的素材统计。"""
+
+    clip_count: int
+    player_prediction_count: int
+    non_background_prediction_count: int
+    temporal_event_count: int
+    mean_confidence: float | None
+    event_counts: dict[str, int]
+    participant_counts: dict[str, int]
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回可以直接写入 JSON 的统计字典。"""
+        return asdict(self)

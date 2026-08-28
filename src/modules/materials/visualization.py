@@ -1,12 +1,11 @@
-"""Render SAM3 trajectories with Qwen recognition results over a video.
+"""在视频上绘制 SAM3 原始轨迹和后续阶段选中的轨迹。
 
-The raw SAM3 document contains every player and ball candidate, while the
-clean document produced by the identity resolver contains only candidates accepted
-by Qwen. This script draws both sets so false rejections remain visible:
+第二份轨迹文件既可以是不经身份过滤的 PlayNet 输入，也可以是附带身份结果的
+轨迹副本。本模块只比较两份轨迹，不假设轨迹由 Qwen 决策：
 
-* green boxes are player tracks retained by Qwen and display jersey numbers;
-* orange boxes are SAM3 player tracks that Qwen did not retain;
-* yellow boxes identify the basketball track selected by Qwen;
+* 绿色框表示第二份轨迹文件保留的人物；
+* 橙色框表示只存在于 SAM3 原始结果中的人物；
+* 黄色框表示第二份轨迹文件选择的篮球；
 * gray boxes are unselected SAM3 basketball candidates.
 
 When a temporal prediction report exported by the event-recognition module is supplied,
@@ -52,9 +51,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     Returns:
         Parsed command-line namespace.
     """
-    parser = argparse.ArgumentParser(
-        description="Visualize raw SAM3 candidates and Qwen-cleaned tracks."
-    )
+    parser = argparse.ArgumentParser(description="可视化 SAM3 原始轨迹与模型输入轨迹。")
     parser.add_argument("--video_path", type=Path, required=True)
     parser.add_argument("--raw_json_path", type=Path, required=True)
     parser.add_argument("--clean_json_path", type=Path, required=True)
@@ -81,7 +78,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--show-rejected",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Draw raw player candidates that Qwen did not retain.",
+        help="绘制未进入第二份轨迹文件的 SAM3 人物候选。",
     )
     parser.add_argument(
         "--show-ball-candidates",
@@ -395,11 +392,11 @@ def build_player_labels(
     clean_tracks: Mapping[str, Any],
     clean_to_raw: Mapping[str, str],
 ) -> dict[str, dict[str, Any]]:
-    """Build display labels and Qwen acceptance states for raw tracks.
+    """为原始轨迹生成通用的保留状态和显示文字。
 
     Args:
         raw_tracks: Raw SAM3 trajectory document.
-        clean_tracks: Qwen-cleaned trajectory document.
+        clean_tracks: 模型输入或附带身份结果的轨迹文件。
         clean_to_raw: Mapping produced by ``match_clean_tracks_to_raw``.
 
     Returns:
@@ -414,7 +411,7 @@ def build_player_labels(
         if clean_id is None:
             labels[str(raw_id)] = {
                 "accepted": False,
-                "text": f"{raw_id} | Qwen not retained",
+                "text": f"{raw_id} | not selected",
             }
             continue
 
@@ -631,14 +628,14 @@ def render_overlay(
     font_scale: float,
     prediction_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Render Qwen acceptance and identities over raw SAM3 trajectories.
+    """在 SAM3 原始轨迹上绘制保留状态、可选身份和事件时间线。
 
     Args:
         video_path: Source MP4 path.
         raw_tracks: Raw SAM3 trajectory document.
-        clean_tracks: Qwen-cleaned trajectory document.
+        clean_tracks: 模型输入或附带身份结果的轨迹文件。
         output_video_path: Destination MP4 path.
-        show_rejected: Whether to draw Qwen-rejected player candidates.
+        show_rejected: 是否绘制只存在于 SAM3 原始结果中的候选。
         show_ball_candidates: Whether to draw SAM3 basketball candidates.
         max_frames: Optional maximum number of frames to render.
         line_thickness: Rectangle line thickness in pixels.
@@ -743,7 +740,7 @@ def render_overlay(
                         continue
                     is_selected = raw_id == selected_ball_id
                     text = (
-                        f"{raw_id} | Qwen selected ball"
+                        f"{raw_id} | selected ball"
                         if is_selected
                         else f"{raw_id} | ball candidate"
                     )
@@ -758,8 +755,8 @@ def render_overlay(
                     )
 
             banner = (
-                f"Qwen accepted players: {len(clean_to_raw)}/{len(player_labels)} | "
-                "green=accepted orange=not retained"
+                f"Model tracks: {len(clean_to_raw)}/{len(player_labels)} | "
+                "green=selected orange=raw only"
             )
             cv2.rectangle(frame, (0, 0), (min(width - 1, 760), 30), (20, 20, 20), -1)
             cv2.putText(
@@ -785,13 +782,13 @@ def render_overlay(
         capture.release()
         writer.release()
 
-    raw_not_retained = sorted(
+    raw_not_selected = sorted(
         raw_id for raw_id, metadata in player_labels.items() if not metadata["accepted"]
     )
-    accepted_players = []
+    selected_players = []
     for clean_id, raw_id in sorted(clean_to_raw.items()):
         payload = clean_tracks[clean_id]
-        accepted_players.append(
+        selected_players.append(
             {
                 "clean_track_id": clean_id,
                 "raw_track_id": raw_id,
@@ -802,7 +799,7 @@ def render_overlay(
         )
 
     return {
-        "schema_version": "basketevent_qwen_visualization.v1",
+        "schema_version": "basketevent_track_visualization.v2",
         "video": str(video_path),
         "output_video": str(output_video_path),
         "source_frame_count": source_frame_count,
@@ -810,8 +807,8 @@ def render_overlay(
         "width": width,
         "height": height,
         "fps": fps,
-        "accepted_players": accepted_players,
-        "raw_player_tracks_not_retained": raw_not_retained,
+        "selected_players": selected_players,
+        "raw_player_tracks_not_selected": raw_not_selected,
         "player_match_diagnostics": player_diagnostics,
         "selected_raw_ball_track_id": selected_ball_id,
         "ball_match_diagnostic": ball_diagnostic,
@@ -848,7 +845,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Load trajectories, render the overlay, and save an audit report."""
     args = parse_args(argv)
     raw_tracks = load_json_object(args.raw_json_path, "Raw SAM3 JSON")
-    clean_tracks = load_json_object(args.clean_json_path, "Qwen clean JSON")
+    clean_tracks = load_json_object(args.clean_json_path, "Model track JSON")
     prediction_report = (
         load_json_object(args.prediction_json_path, "Temporal prediction JSON")
         if args.prediction_json_path is not None

@@ -411,7 +411,7 @@ def build_temporal_prediction_report(
 
     Args:
         video_path: Source video path recorded in the report.
-        trajectory_data: Clean trajectory document containing jersey metadata.
+        trajectory_data: PlayNet 输入轨迹；身份字段可以缺失。
         player_ids: Player IDs in the exact order passed to the model.
         data: Prepared inference data containing sampled source-frame indices.
         outputs: Model outputs returned by :func:`infer_one_video`.
@@ -560,7 +560,9 @@ def main() -> None:
     args = parse_args()
 
     args.video = str(SETTINGS.require_file(args.video, "Input video"))
-    args.traj_json = str(SETTINGS.require_file(args.traj_json, "Clean trajectory JSON"))
+    args.traj_json = str(
+        SETTINGS.require_file(args.traj_json, "PlayNet input trajectory JSON")
+    )
     args.checkpoint = str(
         SETTINGS.require_file(args.checkpoint, "BasketEvent checkpoint")
     )

@@ -1,14 +1,8 @@
-"""Run the complete BasketEvent inference pipeline for one BARD video clip.
+"""处理单个固定时间窗口，并保留所有可用人物轨迹。
 
-This entry point centralizes the server paths, environment variables, and
-stage ordering that were previously repeated in shell commands. It executes
-SAM3 tracking, Qwen trajectory filtering, PlayNet event inference, and the
-diagnostic overlay in order. Existing non-empty stage outputs are reused by
-default so an interrupted run can resume without repeating expensive work.
-
-Qwen may reject every SAM3 player candidate. That is a valid diagnostic result
-rather than a filesystem failure: PlayNet is skipped, a tracking-only overlay
-is rendered, and the pipeline report records ``completed_with_warning``.
+事件识别主链路固定为 ``SAM3 -> 轨迹结构准备 -> PlayNet -> 可视化``。
+身份识别属于后处理，不能在 PlayNet 前删除人物轨迹。已有非空结果默认复用，
+因此服务器任务中断后可以从上一阶段继续。
 """
 
 from __future__ import annotations
@@ -29,13 +23,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.config import SETTINGS, Settings
 
 
-_STAGE_ORDER = ("sam3", "identity", "playnet", "visualize")
-_STAGE_ALIASES = {"qwen": "identity"}
+_STAGE_ORDER = ("sam3", "prepare", "playnet", "visualize")
+_STAGE_ALIASES = {"identity": "prepare", "qwen": "prepare"}
 
 
 @dataclass(frozen=True)
 class SingleVideoPaths:
-    """Collect every input and output path for one BARD video clip.
+    """集中保存单个视频窗口使用的输入、模型和输出路径。
 
     Attributes:
         project_root: Root of the BasketEvent source checkout.
@@ -43,10 +37,8 @@ class SingleVideoPaths:
         artifacts_root: Root for reusable intermediate and final outputs.
         game_id: BARD game directory name.
         clip_id: Video stem, for example ``130``.
-        roster: Game-level roster JSON consumed by Qwen.
         sam3_checkpoint: Local SAM3 checkpoint path.
         sam3_bpe: SAM3 BPE vocabulary path.
-        qwen_model: Local Qwen model directory.
         event_checkpoint: Author-provided PlayNet checkpoint.
         timesformer_model: Local TimeSformer directory.
     """
@@ -56,10 +48,8 @@ class SingleVideoPaths:
     artifacts_root: Path
     game_id: str
     clip_id: str
-    roster: Path
     sam3_checkpoint: Path
     sam3_bpe: Path
-    qwen_model: Path
     event_checkpoint: Path
     timesformer_model: Path
 
@@ -69,7 +59,6 @@ class SingleVideoPaths:
         game_id: str,
         clip_id: str,
         settings: Settings = SETTINGS,
-        roster: Path | None = None,
     ) -> "SingleVideoPaths":
         """Build conventional server paths from central project settings.
 
@@ -77,9 +66,6 @@ class SingleVideoPaths:
             game_id: BARD game directory name.
             clip_id: Source video stem without ``.mp4``.
             settings: Central path configuration.
-            roster: Optional roster override. The generated game roster is
-                used when omitted.
-
         Returns:
             Fully resolved path collection for the requested clip.
         """
@@ -89,11 +75,8 @@ class SingleVideoPaths:
             artifacts_root=settings.artifacts_root,
             game_id=game_id,
             clip_id=clip_id,
-            roster=roster
-            or settings.game_metadata_dir(game_id) / "recognize_roster.json",
             sam3_checkpoint=settings.sam3_checkpoint,
             sam3_bpe=settings.sam3_bpe,
-            qwen_model=settings.qwen_model,
             event_checkpoint=settings.event_checkpoint,
             timesformer_model=settings.timesformer_model,
         )
@@ -114,9 +97,19 @@ class SingleVideoPaths:
         return self.game_artifacts / "tracks" / "raw" / f"{self.clip_id}.json"
 
     @property
-    def clean_tracks(self) -> Path:
-        """Return the Qwen-filtered trajectory JSON path."""
-        return self.game_artifacts / "tracks" / "clean" / f"{self.clip_id}.json"
+    def model_tracks(self) -> Path:
+        """返回不经过身份硬过滤的 PlayNet 输入轨迹。"""
+        return self.game_artifacts / "tracks" / "model_input" / f"{self.clip_id}.json"
+
+    @property
+    def track_preparation_report(self) -> Path:
+        """返回轨迹结构准备阶段的审计报告。"""
+        return (
+            self.game_artifacts
+            / "tracks"
+            / "model_input"
+            / f"{self.clip_id}_report.json"
+        )
 
     @property
     def prediction(self) -> Path:
@@ -153,7 +146,8 @@ class SingleVideoPaths:
         """Create all artifact directories used by the pipeline."""
         for path in (
             self.raw_tracks,
-            self.clean_tracks,
+            self.model_tracks,
+            self.track_preparation_report,
             self.prediction,
             self.visualization,
             self.visualization_report,
@@ -168,7 +162,6 @@ class PipelineConfig:
 
     Attributes:
         sam3_gpus: Comma-separated GPU IDs used by SAM3.
-        qwen_gpus: Comma-separated GPU IDs exposed to Qwen.
         playnet_gpu: GPU ID used by TimeSformer and PlayNet.
         offload_video_to_cpu: Whether SAM3 stores decoded frames in CPU RAM.
         offload_state_to_cpu: Whether SAM3 stores reusable state in CPU RAM.
@@ -191,7 +184,6 @@ class PipelineConfig:
     """
 
     sam3_gpus: str = "0,1"
-    qwen_gpus: str = "0"
     playnet_gpu: int = 0
     offload_video_to_cpu: bool = True
     offload_state_to_cpu: bool = True
@@ -236,13 +228,7 @@ class PipelineConfig:
 
 
 class SingleVideoPipeline:
-    """Coordinate all inference stages for one video without loading models.
-
-    Each model remains owned by its original entry-point process. This keeps
-    GPU memory lifetimes isolated: when SAM3 exits, its memory is released
-    before Qwen starts, and likewise before PlayNet. The class is responsible
-    only for paths, commands, resumption, validation, and audit reporting.
-    """
+    """编排单窗口追踪、轨迹准备、事件识别和可视化。"""
 
     def __init__(self, paths: SingleVideoPaths, config: PipelineConfig) -> None:
         """Initialize a pipeline without performing filesystem or GPU work.
@@ -259,11 +245,12 @@ class SingleVideoPipeline:
             "clip_id": paths.clip_id,
             "video": str(paths.video),
             "status": "running",
-            "accepted_player_count": None,
+            "model_player_count": None,
             "stages": {},
             "outputs": {
                 "raw_tracks": str(paths.raw_tracks),
-                "clean_tracks": str(paths.clean_tracks),
+                "model_tracks": str(paths.model_tracks),
+                "track_preparation_report": str(paths.track_preparation_report),
                 "prediction": str(paths.prediction),
                 "visualization": str(paths.visualization),
                 "visualization_report": str(paths.visualization_report),
@@ -297,11 +284,11 @@ class SingleVideoPipeline:
             / "modules"
             / "tracking"
             / "sam3_tracker.py",
-            "Identity service module": self.paths.project_root
+            "track preparation module": self.paths.project_root
             / "src"
             / "modules"
-            / "identity"
-            / "service.py",
+            / "tracking"
+            / "preparation.py",
             "event-recognition module": self.paths.project_root
             / "src"
             / "modules"
@@ -433,29 +420,20 @@ class SingleVideoPipeline:
             command.append("--offload-state-to-cpu")
         return command
 
-    def _identity_command(self) -> list[str]:
-        """构造取样、Qwen 观察和固定规则解析命令。"""
-        command = [
+    def _prepare_command(self) -> list[str]:
+        """构造只做结构校验、不做身份过滤的轨迹准备命令。"""
+        return [
             sys.executable,
             "-u",
             "-m",
-            "src.modules.identity.service",
-            "--video_path",
-            str(self.paths.video),
-            "--bbox_json_path",
+            "src.modules.tracking.preparation",
+            "--raw-json",
             str(self.paths.raw_tracks),
-            "--json_save_path",
-            str(self.paths.clean_tracks),
-            "--game_id",
-            self.paths.game_id,
-            "--gpus_to_use",
-            self.config.qwen_gpus,
-            "--qwen_model",
-            str(self.paths.qwen_model),
+            "--output-json",
+            str(self.paths.model_tracks),
+            "--report-json",
+            str(self.paths.track_preparation_report),
         ]
-        if self.paths.roster.is_file():
-            command.extend(["--roster_json", str(self.paths.roster)])
-        return command
 
     def _playnet_command(self) -> list[str]:
         """Build the TimeSformer and PlayNet inference command."""
@@ -467,7 +445,7 @@ class SingleVideoPipeline:
             "--video",
             str(self.paths.video),
             "--traj_json",
-            str(self.paths.clean_tracks),
+            str(self.paths.model_tracks),
             "--checkpoint",
             str(self.paths.event_checkpoint),
             "--timesformer_model",
@@ -511,7 +489,7 @@ class SingleVideoPipeline:
             "--raw_json_path",
             str(self.paths.raw_tracks),
             "--clean_json_path",
-            str(self.paths.clean_tracks),
+            str(self.paths.model_tracks),
             "--output_video_path",
             str(self.paths.visualization),
             "--report_json_path",
@@ -521,20 +499,20 @@ class SingleVideoPipeline:
             command.extend(["--prediction_json_path", str(self.paths.prediction)])
         return command
 
-    def _accepted_player_count(self) -> int:
-        """Count player objects retained in the Qwen-cleaned JSON.
+    def _model_player_count(self) -> int:
+        """统计经过结构校验后仍可供 PlayNet 使用的人物轨迹数。
 
         Returns:
             Number of top-level keys whose names begin with ``player_``.
 
         Raises:
-            ValueError: If the clean JSON root is not an object.
+            ValueError: 如果轨迹 JSON 根节点不是对象。
         """
-        with self.paths.clean_tracks.open("r", encoding="utf-8") as file:
+        with self.paths.model_tracks.open("r", encoding="utf-8") as file:
             value = json.load(file)
         if not isinstance(value, Mapping):
             raise ValueError(
-                f"Qwen clean JSON root must be an object: {self.paths.clean_tracks}"
+                f"模型输入轨迹 JSON 根节点必须是对象：{self.paths.model_tracks}"
             )
         return sum(str(key).startswith("player_") for key in value)
 
@@ -556,19 +534,18 @@ class SingleVideoPipeline:
         try:
             self._reuse_or_run("sam3", self.paths.raw_tracks, self._sam3_command())
             self._reuse_or_run(
-                "identity", self.paths.clean_tracks, self._identity_command()
+                "prepare", self.paths.model_tracks, self._prepare_command()
             )
 
             if self.config.dry_run:
-                accepted_player_count = None
+                model_player_count = None
             else:
-                accepted_player_count = self._accepted_player_count()
-            self.report["accepted_player_count"] = accepted_player_count
+                model_player_count = self._model_player_count()
+            self.report["model_player_count"] = model_player_count
 
             if self.config.visualize_only:
-                include_prediction = (
-                    accepted_player_count != 0
-                    and self._is_nonempty_file(self.paths.prediction)
+                include_prediction = model_player_count != 0 and self._is_nonempty_file(
+                    self.paths.prediction
                 )
                 self.report["stages"]["playnet"] = {
                     "status": "skipped",
@@ -585,10 +562,10 @@ class SingleVideoPipeline:
                 self.report["status"] = (
                     "dry_run" if self.config.dry_run else "completed"
                 )
-            elif accepted_player_count == 0:
+            elif model_player_count == 0:
                 self.report["stages"]["playnet"] = {
                     "status": "skipped",
-                    "reason": "Identity produced no player trajectories",
+                    "reason": "轨迹准备阶段没有得到有效人物轨迹",
                 }
                 self._reuse_or_run(
                     "visualize",
@@ -597,8 +574,7 @@ class SingleVideoPipeline:
                 )
                 self.report["status"] = "completed_with_warning"
                 self.report["warning"] = (
-                    "Identity produced no players; PlayNet was skipped and the "
-                    "overlay contains tracking and identity diagnostics only."
+                    "SAM3 没有产生可用人物轨迹；已跳过 PlayNet，仅输出追踪可视化。"
                 )
             else:
                 self._reuse_or_run(
@@ -635,13 +611,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         Parsed command-line namespace.
     """
     parser = argparse.ArgumentParser(
-        description="Run tracking, identity, event inference, and visualization."
+        description="运行追踪、轨迹准备、事件识别和可视化。"
     )
     parser.add_argument("--game", required=True, help="BARD game directory name.")
     parser.add_argument("--clip", required=True, help="Video stem without .mp4.")
-    parser.add_argument("--roster", type=Path, default=None)
     parser.add_argument("--sam3-gpus", default="0,1")
-    parser.add_argument("--qwen-gpus", default="0")
     parser.add_argument("--playnet-gpu", type=int, default=0)
     parser.add_argument(
         "--offload-video-to-cpu",
@@ -684,10 +658,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--visualize-only",
         action="store_true",
-        help=(
-            "Render an existing raw/clean result without loading SAM3, Qwen, "
-            "or PlayNet. An existing prediction JSON is added automatically."
-        ),
+        help=("使用已有追踪和模型输入轨迹生成可视化，不加载 SAM3 或 PlayNet。"),
     )
     return parser.parse_args(argv)
 
@@ -698,11 +669,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     paths = SingleVideoPaths.from_settings(
         game_id=args.game,
         clip_id=args.clip,
-        roster=args.roster,
     )
     config = PipelineConfig(
         sam3_gpus=args.sam3_gpus,
-        qwen_gpus=args.qwen_gpus,
         playnet_gpu=args.playnet_gpu,
         offload_video_to_cpu=args.offload_video_to_cpu,
         offload_state_to_cpu=args.offload_state_to_cpu,

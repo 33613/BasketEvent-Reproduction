@@ -19,13 +19,15 @@ from src.modules.ingestion import VideoAsset
 
 @dataclass(frozen=True)
 class VideoSegment:
-    """Describe one model-sized interval from a source video."""
+    """描述一个分析窗口及其在源视频中的全局位置。"""
 
     segment_id: str
     source_video_id: str
     index: int
     start_seconds: float
     end_seconds: float
+    source_start_frame: int
+    source_end_frame: int
     duration_seconds: float
     output_filename: str
 
@@ -90,6 +92,7 @@ class LongVideoSegmenter:
                 segments[-1] = replace(
                     previous,
                     end_seconds=duration,
+                    source_end_frame=video.frame_count,
                     duration_seconds=duration - previous.start_seconds,
                 )
                 break
@@ -103,6 +106,12 @@ class LongVideoSegmenter:
                     index=index,
                     start_seconds=start,
                     end_seconds=end,
+                    source_start_frame=min(
+                        int(round(start * video.fps)), video.frame_count
+                    ),
+                    source_end_frame=min(
+                        int(round(end * video.fps)), video.frame_count
+                    ),
                     duration_seconds=segment_duration,
                     output_filename=f"{segment_id}.mp4",
                 )
@@ -123,6 +132,8 @@ class LongVideoSegmenter:
         destination.parent.mkdir(parents=True, exist_ok=True)
         document = {
             "schema_version": "basketevent_segments.v1",
+            "analysis_strategy": "fixed_overlapping_windows",
+            "time_reference": "source_video",
             "video": video.to_dict(),
             "segments": [segment.to_dict() for segment in segments],
         }

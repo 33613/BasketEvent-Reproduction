@@ -18,6 +18,73 @@ from src.modules.catalog.models import (
 class CatalogService:
     """负责素材数据整理，不负责数据库读写。"""
 
+    def build_final_material(
+        self,
+        *,
+        material_id: str,
+        source_video_id: str,
+        video_path: str | Path,
+        start_seconds: float,
+        end_seconds: float,
+        events: Sequence[Mapping[str, Any]],
+        participants: Sequence[Mapping[str, Any]] = (),
+        metadata: Mapping[str, Any] | None = None,
+    ) -> CatalogItem:
+        """把全局事件、最终素材路径和可选身份整理成数据库对象。"""
+        if end_seconds <= start_seconds:
+            raise ValueError("最终素材必须具有正数时长")
+        event_tags = tuple(
+            EventTag(
+                event=str(value.get("event") or "unknown"),
+                confidence=float(value.get("confidence") or 0.0),
+                player_id=(
+                    str(value["global_track_id"])
+                    if value.get("global_track_id") is not None
+                    else None
+                ),
+                start_seconds=(
+                    float(value["evidence_start_seconds"])
+                    if value.get("evidence_start_seconds") is not None
+                    else None
+                ),
+                end_seconds=(
+                    float(value["evidence_end_seconds"])
+                    if value.get("evidence_end_seconds") is not None
+                    else None
+                ),
+            )
+            for value in events
+            if str(value.get("event") or "blank") != "blank"
+        )
+        participant_references = tuple(
+            ParticipantReference(
+                participant_id=str(value["participant_id"]),
+                track_id=str(value.get("track_id") or "unknown"),
+                jersey_color=value.get("jersey_color"),
+                jersey_number=(
+                    str(value["jersey_number"])
+                    if value.get("jersey_number") is not None
+                    else None
+                ),
+                player_name=value.get("player_name"),
+                identity_status=value.get("identity_status"),
+            )
+            for value in participants
+            if value.get("participant_id") is not None
+        )
+        return CatalogItem(
+            material_id=material_id,
+            source_video_id=source_video_id,
+            segment_id=material_id,
+            video_path=Path(video_path),
+            start_seconds=float(start_seconds),
+            end_seconds=float(end_seconds),
+            processing_status="ready" if event_tags else "ready_without_event",
+            events=event_tags,
+            participants=participant_references,
+            metadata=dict(metadata or {}),
+        )
+
     @staticmethod
     def _participant_id(prediction: Mapping[str, Any]) -> str:
         """从预测结果得到可检索的人物编号。"""

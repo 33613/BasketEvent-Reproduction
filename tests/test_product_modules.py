@@ -61,6 +61,10 @@ class LongVideoSegmenterTest(unittest.TestCase):
             [(0.0, 12.0), (10.0, 22.0), (20.0, 30.0)],
         )
         self.assertEqual(segments[1].source_video_id, "video-test")
+        self.assertEqual(
+            [(item.source_start_frame, item.source_end_frame) for item in segments],
+            [(0, 360), (300, 660), (600, 900)],
+        )
 
     def test_short_tail_is_merged_into_previous_window(self) -> None:
         """A tiny final tail should extend the prior segment instead."""
@@ -95,6 +99,8 @@ class LongVideoProcessingApplicationTest(unittest.TestCase):
             self.assertTrue(manifest.is_file())
             document = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(len(document["segments"]), 3)
+            self.assertEqual(document["time_reference"], "source_video")
+            self.assertEqual(document["analysis_strategy"], "fixed_overlapping_windows")
             self.assertEqual(report["exported_clips"], [])
             self.assertEqual(ingestion.inputs, [Path("uploaded-game.mp4")])
 

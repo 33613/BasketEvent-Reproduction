@@ -220,3 +220,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 长视频端到端测试：只提交目录说明，不提交视频、模型输出和 SQLite。
+/tests/long_video_runtime/*
+!/tests/long_video_runtime/README.md

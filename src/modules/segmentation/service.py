@@ -198,5 +198,7 @@ class LongVideoSegmenter:
                 str(destination),
             ]
             subprocess.run(command, check=True)
+            if not destination.is_file() or destination.stat().st_size <= 0:
+                raise RuntimeError(f"FFmpeg 未生成有效固定窗口：{destination}")
             outputs.append(destination)
         return outputs

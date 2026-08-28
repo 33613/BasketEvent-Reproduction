@@ -1,31 +1,23 @@
 # BasketEvent 篮球视频素材理解系统
 
-本仓库以 BasketEvent 论文方法为基础，目标是把一场篮球比赛长视频自动处理成可检索、可分类的事件素材。项目当前关注完整产品链路，而不是孤立优化某一个模型：模型识别失败必须被记录，但不能阻塞素材生成。
+本项目以 BasketEvent 论文方法为基础，把篮球长视频处理成可查询的事件素材。当前目标是先跑通一条可复现、可恢复的最小产品链路：固定窗口只是模型输入，最终交付素材由事件结果重新导出。
 
-## 当前工作流
+## 当前可运行链路
 
 ```text
-用户比赛视频
-  → 视频接入与元数据检查
-  → 固定重叠窗口（保留源视频全局时间）
-  → SAM3 球员与篮球轨迹
-  → 轨迹结构准备（不按身份过滤）
-  → TimeSformer + PlayNet 事件识别
-  → 局部事件映射到源视频时间轴
-  → 重叠窗口事件消重
-  → 按事件类型生成待剪范围
-  → FFmpeg 导出事件素材
-  → 对事件素材执行身份观察与规则解析
-  → 跨素材人物归并（只使用确定证据）
-  → SQLite 登记、检索与统计
+长视频
+  → 读取视频元数据
+  → 固定时长重叠切窗
+  → 对每个窗口运行 SAM3 轨迹追踪
+  → 不经过身份硬过滤，整理 PlayNet 输入轨迹
+  → TimeSformer + PlayNet 识别球员级事件
+  → 映射到长视频全局时间并合并重叠事件
+  → 按事件时间范围导出最终素材
+  → 默认以匿名人物登记 SQLite
+  → 可选：对最终素材批量运行 SAM3 + Qwen 身份观察后更新登记
 ```
 
-工作流分成两个弱耦合阶段：
-
-1. **事件发现**回答“什么时候发生了什么”，不依赖球衣号码是否可读；
-2. **素材增强**再回答“素材里有谁”，身份无法确定时保留匿名人物。
-
-因此 Qwen、号码识别或后续 ReID 都不会成为事件识别前的硬过滤器。
+身份处理是事件识别后的可选增强。球衣号码没有识别出来时，事件素材仍然会保留并以匿名人物登记，不会再次出现“Qwen 过滤掉轨迹后，PlayNet 看不到关键球员”的问题。
 
 ## 项目结构
 
@@ -33,132 +25,90 @@
 BasketEvent/
 ├── config/
 │   ├── bard_team_colors.example.json
-│   └── environment/                  # 服务器环境固化文件
-├── product_data/                     # 产品数据库与用户媒体，内容不提交
-├── sam3/                             # SAM3 Git 子模块
+│   └── environment/                    # 服务器环境固化文件
+├── product_data/                       # 正式产品数据库和媒体（不提交大文件）
+├── sam3/                               # SAM3 Git 子模块
 ├── src/
-│   ├── application/                  # 编排模块，不实现模型和 SQL 细节
-│   │   ├── process_video.py           # 长视频接入与固定窗口规划
-│   │   ├── process_clip.py            # 单窗口追踪和事件识别
-│   │   ├── finalize_materials.py       # 导出、归并并登记最终素材
-│   │   └── search_materials.py         # 查询产品素材
+│   ├── application/                    # 跨模块应用流程
+│   │   ├── process_long_video.py       # 长视频调度、重试、续跑和最终入库
+│   │   ├── process_clip.py             # 单窗口完整模型链路
+│   │   ├── process_video.py            # 视频接入与切窗的可复用用例
+│   │   ├── finalize_materials.py       # 最终素材导出和数据库登记
+│   │   └── search_materials.py         # 产品素材查询
 │   ├── core/
-│   │   └── config.py                  # 路径和运行配置
+│   │   └── config.py                   # 默认路径和模型配置
 │   └── modules/
-│       ├── ingestion/                 # 视频与 BARD 数据接入
-│       ├── segmentation/              # 固定重叠窗口规划和导出
-│       ├── tracking/                  # SAM3 追踪与模型输入轨迹准备
-│       ├── event_recognition/         # PlayNet 推理与全局事件时间线
-│       ├── materials/                 # 最终素材导出和视频可视化
-│       ├── identity/                  # 身份观察、解析与跨素材归并
-│       ├── catalog/                   # 素材对象整理与统计
-│       └── database/                  # SQLite 保存与查询
-├── training/                          # Dataset、Solver 和训练入口
-├── tests/                             # 单元测试和受控诊断脚本
+│       ├── ingestion/                  # 用户视频与 BARD 数据接入
+│       ├── segmentation/               # 固定重叠窗口规划和 FFmpeg 导出
+│       ├── tracking/                   # SAM3 和事件输入轨迹准备
+│       ├── event_recognition/          # PlayNet 推理和全局事件时间线
+│       ├── materials/                  # 最终事件素材导出与可视化
+│       ├── identity/                   # Qwen 观察、规则解析和保守归并
+│       ├── catalog/                    # 数据库存储前的素材对象整理
+│       └── database/                   # SQLite 保存和查询
+├── training/                           # Dataset、Solver 和训练入口
+├── tests/
+│   ├── long_video_runtime/             # 长视频端到端测试输入与运行产物
+│   ├── qwen_tests_runtime/             # Qwen 诊断产物
+│   └── track_segment_runtime/           # 人工轨迹片段验证产物
 ├── requirements.txt
 └── README.md
 ```
 
-根目录不再保留旧入口或 `src` 根目录兼容副本。每项功能只有一份实现，统一通过 `python -m 完整模块路径` 调用。
+## 主要模块
 
-## 模块职责
+### ingestion：视频接入
 
-### 1. ingestion：接收视频
+检查输入文件，读取时长、帧率、分辨率和帧数，并为同一份输入生成稳定的视频编号。BARD 转换工具也位于此模块，但 BARD 是研究数据，不进入产品数据库。
 
-检查输入文件并读取时长、帧率、分辨率、帧数等元数据，为一次用户上传生成稳定视频编号。BARD 转换工具也放在这里，但 BARD 只用于模型验证，不属于产品数据库。
+### segmentation：模型输入切窗
 
-### 2. segmentation：生成分析窗口
+当前按固定时长切出带重叠的窗口。每个窗口记录源视频中的全局起止时间和帧号。窗口仅用于运行模型，不是最终交付给用户的素材。
 
-当前使用固定时长、带重叠的窗口。每个 `VideoSegment` 保存：
-
-- 源视频编号；
-- 全局起止秒数；
-- 全局起止帧号；
-- 导出文件名。
-
-固定窗口是事件模型的分析单位，不是最终交付给用户的素材。
-
-### 3. tracking：生成轨迹
+### tracking：轨迹处理
 
 - `sam3_tracker.py` 调用 SAM3 生成球员和篮球逐帧边界框；
-- `preparation.py` 检查轨迹结构、保留所有有效人物并选择篮球候选；
+- `preparation.py` 校验轨迹、保留所有具有有效边界框的人物并选择篮球候选；
 - TITAN RTX 使用兼容注意力和 CPU 卸载策略。
 
-`preparation.py` 不读取 Qwen 结论。只要人物轨迹具有有效边界框，就会进入 PlayNet。
+事件识别前不读取 Qwen 的人物判断。
 
-### 4. event_recognition：事件发现与全局时间线
+### event_recognition：事件识别与时间线
 
 - `playnet/`：PlayNet 网络层和模型组装；
-- `inference.py`：TimeSformer 全局特征、人物 ROI/轨迹特征与事件推理；
-- `trajectory.py`：训练和推理共用的轨迹缩放；
-- `labels.py`：事件标签定义；
-- `timeline.py`：局部时间映射、重叠窗口消重和待剪范围生成。
+- `inference.py`：TimeSformer 全局特征、人物局部特征和事件推理；
+- `timeline.py`：把窗口内时间映射回源视频、合并重叠窗口的重复事件，并生成待剪范围；
+- `labels.py`：事件标签定义。
 
-时间线包含三层结果：
+当前事件时间来自 MIL 权重与窗口预测，是产品原型中的诊断性定位，不是人工标注的精确动作边界。
 
-- `candidates`：每个固定窗口中的原始时间证据；
-- `events`：映射到源视频并完成窗口消重的事件；
-- `material_drafts`：按事件类型增加前后文后的待剪范围。
+### materials：最终素材
 
-当前时间定位来自 MIL 权重，只用于第一版产品剪辑，不等同于动作级人工真值。
+`exporter.py` 根据全局事件时间线，使用 FFmpeg 从原长视频导出最终事件素材。导出的现有非空文件默认复用。
 
-### 5. materials：导出与可视化
-
-- `exporter.py` 使用 FFmpeg 从源视频导出 `material_drafts`；
-- `visualization.py` 绘制 SAM3 轨迹、模型输入轨迹和事件时间线。
-
-导出的文件名同时兼容 Windows 和 Linux。已有非空素材默认复用。
-
-### 6. identity：素材后处理身份
+### identity：可选身份增强
 
 ```text
-identity/
-├── sampling.py          # 从一条轨迹选择不同时间位置的截图
-├── qwen_observer.py     # Qwen 逐帧观察球衣颜色和号码
-├── resolver.py          # 固定规则生成 identified/conflicting/anonymous
-├── association.py       # 跨素材保守人物归并
-├── service.py           # 单素材身份处理入口
-└── models.py            # 阶段间数据结构
+轨迹取样
+  → Qwen 逐帧观察球衣颜色和号码
+  → 固定规则解析 identified / conflicting / anonymous
+  → 跨素材只归并颜色和号码均确定的身份
 ```
 
-身份规则：
+Qwen 只提供可审计证据，不决定事件轨迹是否进入 PlayNet。当前没有实现 ReID。
 
-- Qwen 只提供可审计观察，不决定轨迹是否保留；
-- 唯一完整颜色号码组合为 `identified`；
-- 多个组合为 `conflicting`；
-- 没有完整组合为 `anonymous`；
-- 名单只补充姓名，不决定是否保留；
-- 跨素材仅合并 `identified` 且颜色号码完整的结果；
-- 匿名和冲突人物始终保持素材隔离，避免错误合并。
+### catalog 与 database：产品登记
 
-当前没有实现 ReID。以后可以增加外观向量作为新证据，但不能改变上述保守回退规则。
+`catalog` 把素材文件、事件和可选人物整理成统一业务对象；`database` 使用 SQLite 保存素材、事件、人物及其关系。MP4 保存在文件系统，SQLite 只保存元数据和路径。
 
-### 7. catalog：整理素材对象
-
-`CatalogService` 不连接数据库：
-
-- `build_final_material()` 把最终视频路径、全局事件和可选人物组成 `CatalogItem`；
-- `build_material()` 保留给旧的单片段实验；
-- `summarize_reports()` 汇总事件、人物和置信度。
-
-### 8. database：保存产品数据
-
-产品数据和 BARD 数据集完全分开：
+研究数据与产品数据分离：
 
 ```text
-product_data/
-├── database/basketevent.sqlite3
-└── media/
-    ├── uploads/
-    ├── segments/
-    └── visualizations/
+BARD 数据集：/home/fangzilin/data/basket
+产品或测试数据：product_data/ 或 tests/long_video_runtime/<video_id>/product_data
 ```
 
-SQLite 保存人物、素材、事件和素材人物关系；MP4 仍保存在文件系统，数据库只记录路径。支持按事件、人物和最低置信度组合查询。
-
-## 环境准备
-
-服务器当前验证环境：
+## 服务器环境
 
 ```bash
 source /home/fangzilin/tools/miniconda3/etc/profile.d/conda.sh
@@ -183,29 +133,79 @@ git submodule update --init --recursive
 └── basketevent/playnet.pt
 ```
 
-常用环境变量：
+## 长视频端到端测试
 
-- `BASKETEVENT_DATA_ROOT`
-- `BASKETEVENT_ARTIFACTS_ROOT`
-- `BASKETEVENT_RUNTIME_ROOT`
-- `BASKETEVENT_PRODUCT_DATA_ROOT`
-- `BASKETEVENT_MODEL_ROOT`
-- `BASKETEVENT_GPU_IDS`
-- `BASKETEVENT_HF_LOCAL_FILES_ONLY`
+所有长视频测试数据放在服务器项目的：
 
-## 运行方式
-
-### 规划长视频固定窗口
-
-```bash
-python -m src.application.process_video INPUT.mp4 \
-  --output-root /home/fangzilin/data/video_jobs \
-  --window-seconds 12 \
-  --overlap-seconds 2 \
-  --export-clips
+```text
+/home/fangzilin/project/BasketEvent/tests/long_video_runtime/
 ```
 
-### 处理一个固定窗口
+建议把待测视频放在 `input/`：
+
+```bash
+cd /home/fangzilin/project/BasketEvent
+mkdir -p tests/long_video_runtime/input
+```
+
+运行一条 3～10 分钟测试视频：
+
+```bash
+python -u -m src.application.process_long_video \
+  tests/long_video_runtime/input/test_game.mp4 \
+  --runtime-root tests/long_video_runtime \
+  --window-seconds 12 \
+  --overlap-seconds 2 \
+  --max-attempts-per-run 2 \
+  --sam3-gpus 0,1 \
+  --playnet-gpu 0
+```
+
+默认流程不运行身份识别。这样可以先验证长视频切窗、轨迹、事件、时间线、最终素材和 SQLite 登记。需要在最终素材上追加身份处理时，增加：
+
+```bash
+  --with-identity --identity-gpus 0
+```
+
+名单不是必需输入；不提供名单时保存球衣颜色、号码或匿名身份，不映射真实姓名。
+
+### 失败重试与断点续跑
+
+- 每个失败窗口在本次运行中最多尝试 `--max-attempts-per-run` 次；
+- SSH 中断后，重新运行完全相同的命令即可继续；
+- 已成功窗口、已有最终素材和已有身份报告会被复用；
+- 默认只要有窗口最终失败，任务就停止在时间线生成前；
+- 只有明确接受不完整结果时才使用 `--allow-partial`；
+- 已有任务的切窗或模型参数发生变化时，程序会拒绝混用旧结果。
+
+如需放弃旧状态并从头运行，必须同时显式指定：
+
+```bash
+  --no-resume --overwrite-windows
+```
+
+### 运行产物
+
+```text
+tests/long_video_runtime/<video_id>/
+├── job_state.json             # 窗口状态、尝试次数和错误信息
+├── segments.json              # 固定窗口清单
+├── windows/                   # 导出的模型输入窗口
+├── window_artifacts/          # 每个窗口的 SAM3、PlayNet 和可视化结果
+├── event_timeline.json        # 源视频全局事件时间线
+├── final_materials/           # 重新从长视频导出的最终事件素材
+├── final_identity/            # 可选身份阶段产物
+├── identity_index.json        # 可选素材身份索引
+├── finalization_report.json   # 最终导出和入库报告
+└── product_data/
+    └── database/basketevent.sqlite3
+```
+
+`tests/long_video_runtime/` 中除说明文件外的输入和产物均被 Git 忽略。
+
+## 单窗口诊断
+
+保留单窗口入口用于 BARD 片段复现和问题定位：
 
 ```bash
 python -m src.application.process_clip \
@@ -215,7 +215,7 @@ python -m src.application.process_clip \
   --playnet-gpu 0
 ```
 
-已有 SAM3 结果时从轨迹准备继续：
+已有 SAM3 结果时，可从轨迹准备继续：
 
 ```bash
 python -m src.application.process_clip \
@@ -224,62 +224,20 @@ python -m src.application.process_clip \
   --start-at prepare
 ```
 
-### 单独处理素材身份
+## 查询素材
 
-```bash
-python -m src.modules.identity.service \
-  --video_path /path/to/material.mp4 \
-  --bbox_json_path /path/to/material_raw_tracks.json \
-  --json_save_path /path/to/material_identity_tracks.json \
-  --qwen_model /home/fangzilin/models/Qwen2.5-VL-7B-Instruct \
-  --gpus_to_use 0
-```
-
-身份服务需要该最终素材自身的 SAM3 轨迹。名单可选；不提供名单时不映射真实姓名。
-
-### 导出并登记最终素材
-
-```bash
-python -m src.application.finalize_materials \
-  --source-video-id GAME_OR_UPLOAD_ID \
-  --source-video /path/to/full_game.mp4 \
-  --timeline-json /path/to/event_timeline.json \
-  --output-directory product_data/media/segments/GAME_OR_UPLOAD_ID \
-  --database-root product_data \
-  --identity-index-json /path/to/identity-index.json \
-  --report-json /path/to/finalization_report.json
-```
-
-身份索引是可选文件。没有它时，事件素材仍会被导出并登记：
-
-```json
-{
-  "GAME_OR_UPLOAD_ID:material_00000": "identity/material_00000_identity.json",
-  "GAME_OR_UPLOAD_ID:material_00001": "identity/material_00001_identity.json"
-}
-```
-
-### 查询素材
+长视频测试任务使用自己的数据库目录：
 
 ```bash
 python -m src.application.search_materials \
-  --database-root product_data \
+  --database-root tests/long_video_runtime/<video_id>/product_data \
   --event "Made Shot" \
   --minimum-confidence 0.7
 ```
 
-也可以增加 `--participant-id` 查询同一确定人物出现的素材。
+## BARD、训练与测试
 
-### 初始化或查看数据库
-
-```bash
-python -m src.modules.database init
-python -m src.modules.database status
-```
-
-## BARD 和训练工具
-
-BARD 只用于方法验证与未来训练，不进入产品数据库：
+BARD 只用于方法验证与未来训练：
 
 ```bash
 python -m src.modules.ingestion.bard.prepare --help
@@ -287,35 +245,30 @@ python -m src.modules.ingestion.bard.annotations_cli --help
 python -m training.train --help
 ```
 
-作者未公开原始训练视频与完整标签生成过程。作者 checkpoint 只能验证方法链路，不能代表在 BARD 或用户视频上的最终准确率。
+作者未公开原始训练视频和完整标签生成过程。作者 checkpoint 只能验证方法链路，不能代表在 BARD 或用户视频上的最终准确率。
 
-## 测试
+运行单元测试：
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-`tests/qwen_tests_runtime/` 和 `tests/track_segment_runtime/` 只约定运行时诊断目录，大文件不会提交。
+## 当前已实现
 
-## 当前完成度
+- 长视频元数据读取与固定重叠窗口导出；
+- 自动遍历全部窗口；
+- 每窗口失败重试、状态记录和断点续跑；
+- SAM3 轨迹生成及 TITAN RTX 兼容路径；
+- 不依赖身份硬过滤的 PlayNet 轨迹准备；
+- 球员级事件推理、全局时间映射和重叠事件合并；
+- 根据事件时间重新导出最终素材；
+- 默认匿名登记 SQLite，支持事件、人物和置信度查询；
+- 可选的最终素材 SAM3 与身份处理批量调度。
 
-- [x] 长视频元数据读取与固定重叠窗口规划
-- [x] SAM3 轨迹生成与 TITAN RTX 兼容路径
-- [x] 不依赖身份过滤的 PlayNet 输入准备
-- [x] 球员级事件推理与诊断性时间证据
-- [x] 源视频全局时间映射与重叠窗口事件消重
-- [x] 事件类型上下文规则与最终素材导出
-- [x] 单素材身份观察、固定规则解析和保守跨素材归并
-- [x] SQLite 素材登记、事件/人物组合检索与统计
-- [ ] 自动遍历整场比赛的全部窗口并管理失败重试
-- [ ] 最终素材上的 SAM3 与身份处理批量调度
-- [ ] 更精确的事件边界和 ReID/外观证据实验
+## 当前边界
 
-## 当前限制
-
-- TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容注意力路径，速度较慢；
-- 固定窗口不是最终素材，最终素材由全局事件时间线重新生成；
-- `conflicting` 轨迹会被保留，但身份切换边界仍需后续处理；
-- 现有模块已覆盖完整数据流，但尚未提供自动循环全部窗口的作业调度器；
-- 最终素材的 SAM3 和身份处理目前调用已有命令，尚未自动批量执行；
-- 时间边界来自模型诊断证据，需要通过更多比赛评估剪辑效果。
+- 固定窗口还没有替换为智能切分；
+- 事件边界来自模型的诊断性时间证据，尚未达到人工剪辑精度；
+- 当前没有 ReID，跨素材只使用确定的球衣颜色和号码；
+- TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容路径，速度较慢；
+- 长视频调度器已完成自动化代码和隔离单元测试，仍需使用真实 3～10 分钟视频完成服务器端性能与稳定性测试。

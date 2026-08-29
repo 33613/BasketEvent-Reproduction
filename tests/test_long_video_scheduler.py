@@ -303,6 +303,54 @@ class LongVideoSchedulerTest(unittest.TestCase):
                     window_processor=RetryWindowProcessor(),
                 ).run(source)
 
+    def test_resume_allows_changed_gpu_assignment(self) -> None:
+        """服务器资源变化后应允许把未完成工作切换到另一张 GPU。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.mp4"
+            source.write_bytes(b"input")
+            settings = Settings(
+                project_root=root,
+                data_root=root / "data",
+                artifacts_root=root / "artifacts",
+                runtime_root=root / "runtime",
+                product_data_root=root / "product",
+                model_root=root / "models",
+            )
+            common_arguments = {
+                "settings": settings,
+                "scheduler_config": LongVideoSchedulerConfig(
+                    runtime_root=root / "long_video_runtime",
+                    max_attempts_per_run=2,
+                ),
+                "ingestion": FakeIngestion(source),
+                "segmenter": FakeSegmenter(),
+                "material_exporter": FakeMaterialExporter(),
+            }
+            first_processor = RetryWindowProcessor()
+            LongVideoScheduler(
+                **common_arguments,
+                pipeline_config=PipelineConfig(sam3_gpus="0,1", playnet_gpu=0),
+                window_processor=first_processor,
+            ).run(source)
+
+            second_processor = RetryWindowProcessor()
+            result = LongVideoScheduler(
+                **common_arguments,
+                pipeline_config=PipelineConfig(sam3_gpus="1", playnet_gpu=1),
+                window_processor=second_processor,
+            ).run(source)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(second_processor.calls, {})
+            state = json.loads(
+                (
+                    root / "long_video_runtime" / "video-test" / "job_state.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["configuration"]["pipeline"]["sam3_gpus"], "1")
+            self.assertEqual(state["configuration"]["pipeline"]["playnet_gpu"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

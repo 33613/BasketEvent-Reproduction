@@ -64,6 +64,21 @@ def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _result_affecting_pipeline_configuration(
+    configuration: Mapping[str, Any],
+) -> dict[str, Any]:
+    """返回影响模型结果的配置，排除可在续跑时调整的 GPU 分配。
+
+    ``sam3_gpus`` 和 ``playnet_gpu`` 只决定任务在哪张物理显卡上运行，
+    不改变模型、采样或推理参数。因此服务器资源变化后允许改用空闲 GPU，
+    同时仍拒绝在同一任务目录内混用 ``topk`` 等结果相关参数。
+    """
+    result_configuration = dict(configuration)
+    result_configuration.pop("sam3_gpus", None)
+    result_configuration.pop("playnet_gpu", None)
+    return result_configuration
+
+
 class WindowProcessor(Protocol):
     """约束单个固定窗口处理器。"""
 
@@ -364,9 +379,18 @@ class LongVideoScheduler:
         }
         pipeline_configuration = asdict(self.pipeline_config)
         previous_configuration = state.get("configuration", {})
+        previous_pipeline_configuration = previous_configuration.get("pipeline", {})
+        if not isinstance(previous_pipeline_configuration, Mapping):
+            previous_pipeline_configuration = {}
+        result_configuration = _result_affecting_pipeline_configuration(
+            pipeline_configuration
+        )
+        previous_result_configuration = _result_affecting_pipeline_configuration(
+            previous_pipeline_configuration
+        )
         if state and (
             previous_configuration.get("windows") != window_configuration
-            or previous_configuration.get("pipeline") != pipeline_configuration
+            or previous_result_configuration != result_configuration
         ):
             raise ValueError(
                 "任务目录中的切窗或模型配置与本次不同。若要全部重算，请同时使用 "

@@ -13,11 +13,13 @@
   → TimeSformer + PlayNet 识别球员级事件
   → 映射到长视频全局时间并合并重叠事件
   → 按事件时间范围导出最终素材
-  → 默认以匿名人物登记 SQLite
-  → 可选：对最终素材批量运行 SAM3 + Qwen 身份观察后更新登记
+  → 默认登记“事件 → 素材”SQLite 索引
+  → 可选：沿事件轨迹引用复用窗口 SAM3 bbox
+  → 只为非 blank 事件主体抽帧并运行 Qwen 身份观察
+  → 登记“人物 → 事件 → 素材”SQLite 索引
 ```
 
-身份处理是事件识别后的可选增强。球衣号码没有识别出来时，事件素材仍然会保留并以匿名人物登记，不会再次出现“Qwen 过滤掉轨迹后，PlayNet 看不到关键球员”的问题。
+身份处理是事件识别后的可选增强。球衣号码没有识别出来时，事件素材仍然会保留并以事件级匿名人物登记，不会再次出现“Qwen 过滤掉轨迹后，PlayNet 看不到关键球员”的问题。身份阶段不重新运行 SAM3，也不观察同一窗口里的无关球员。
 
 ## 项目结构
 
@@ -43,7 +45,7 @@ BasketEvent/
 │       ├── tracking/                   # SAM3 和事件输入轨迹准备
 │       ├── event_recognition/          # PlayNet 推理和全局事件时间线
 │       ├── materials/                  # 最终事件素材导出与可视化
-│       ├── identity/                   # Qwen 观察、规则解析和保守归并
+│       ├── identity/                   # 事件轨迹取样、Qwen观察和规则解析
 │       ├── catalog/                    # 数据库存储前的素材对象整理
 │       └── database/                   # SQLite 保存和查询
 ├── training/                           # Dataset、Solver 和训练入口
@@ -89,13 +91,15 @@ BasketEvent/
 ### identity：可选身份增强
 
 ```text
-轨迹取样
+读取非 blank 事件的 track_references
+  → 定位已有窗口 MP4 和 SAM3 bbox JSON
+  → 只对事件主体轨迹最多均匀抽取 10 帧
   → Qwen 逐帧观察球衣颜色和号码
   → 固定规则解析 identified / conflicting / anonymous
-  → 跨素材只归并颜色和号码均确定的身份
+  → 把 participant_id 直接绑定到事件和最终素材
 ```
 
-Qwen 只提供可审计证据，不决定事件轨迹是否进入 PlayNet。当前没有实现 ReID。
+同一个“窗口/人物轨迹”被多个事件引用时只观察一次，逐帧证据保存在 `event_identity_tracks/`，中断后可以复用。Qwen 只提供可审计证据，不决定事件轨迹是否进入 PlayNet。当前没有实现 ReID；跨素材只按确定的球衣颜色和号码生成稳定人物编号。
 
 ### catalog 与 database：产品登记
 
@@ -154,6 +158,7 @@ mkdir -p tests/long_video_runtime/input
 python -u -m src.application.process_long_video \
   tests/long_video_runtime/input/test_game.mp4 \
   --runtime-root tests/long_video_runtime \
+  --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg \
   --window-seconds 12 \
   --overlap-seconds 2 \
   --max-attempts-per-run 2 \
@@ -161,10 +166,31 @@ python -u -m src.application.process_long_video \
   --playnet-gpu 0
 ```
 
-默认流程不运行身份识别。这样可以先验证长视频切窗、轨迹、事件、时间线、最终素材和 SQLite 登记。需要在最终素材上追加身份处理时，增加：
+默认流程不运行身份识别。这样可以先验证长视频切窗、轨迹、事件、时间线、最终素材和 SQLite 登记。事件阶段完成后，重新运行相同命令并增加以下参数，即可复用全部成功窗口并只执行事件主体身份阶段：
 
 ```bash
   --with-identity --identity-gpus 0
+```
+
+`--identity-num-crops` 默认是10。`--identity-pad-ratio` 默认是0，不扩张SAM3人物框。
+
+如果通过 `CUDA_VISIBLE_DEVICES=1` 只暴露物理 GPU1，进程内它会映射为逻辑 GPU0，因此仍应写 `--identity-gpus 0`：
+
+```bash
+export CUDA_VISIBLE_DEVICES=1
+
+python -u -m src.application.process_long_video \
+  tests/long_video_runtime/input/test_game.mp4 \
+  --runtime-root tests/long_video_runtime \
+  --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg \
+  --window-seconds 12 \
+  --overlap-seconds 2 \
+  --max-attempts-per-run 2 \
+  --sam3-gpus 0 \
+  --playnet-gpu 0 \
+  --with-identity \
+  --identity-gpus 0 \
+  --identity-num-crops 10
 ```
 
 名单不是必需输入；不提供名单时保存球衣颜色、号码或匿名身份，不映射真实姓名。
@@ -194,8 +220,8 @@ tests/long_video_runtime/<video_id>/
 ├── window_artifacts/          # 每个窗口的 SAM3、PlayNet 和可视化结果
 ├── event_timeline.json        # 源视频全局事件时间线
 ├── final_materials/           # 重新从长视频导出的最终事件素材
-├── final_identity/            # 可选身份阶段产物
-├── identity_index.json        # 可选素材身份索引
+├── event_identity.json        # 可选的事件主体身份汇总
+├── event_identity_tracks/     # 唯一窗口轨迹的Qwen证据缓存
 ├── finalization_report.json   # 最终导出和入库报告
 └── product_data/
     └── database/basketevent.sqlite3
@@ -235,6 +261,19 @@ python -m src.application.search_materials \
   --minimum-confidence 0.7
 ```
 
+身份阶段完成后，可以按人物，或按“同一个人物完成的指定事件”查询：
+
+```bash
+python -m src.application.search_materials \
+  --database-root tests/long_video_runtime/<video_id>/product_data \
+  --participant-id "<video_id>:jersey:white:13"
+
+python -m src.application.search_materials \
+  --database-root tests/long_video_runtime/<video_id>/product_data \
+  --participant-id "<video_id>:jersey:white:13" \
+  --event "Made Shot"
+```
+
 ## BARD、训练与测试
 
 BARD 只用于方法验证与未来训练：
@@ -262,8 +301,9 @@ python -m unittest discover -s tests -v
 - 不依赖身份硬过滤的 PlayNet 轨迹准备；
 - 球员级事件推理、全局时间映射和重叠事件合并；
 - 根据事件时间重新导出最终素材；
-- 默认匿名登记 SQLite，支持事件、人物和置信度查询；
-- 可选的最终素材 SAM3 与身份处理批量调度。
+- 默认登记事件素材，支持事件和置信度查询；
+- 复用窗口SAM3轨迹、只观察事件主体的Qwen身份阶段；
+- SQLite v2事件—人物直接绑定，支持人物、事件及组合查询。
 
 ## 当前边界
 
@@ -271,4 +311,5 @@ python -m unittest discover -s tests -v
 - 事件边界来自模型的诊断性时间证据，尚未达到人工剪辑精度；
 - 当前没有 ReID，跨素材只使用确定的球衣颜色和号码；
 - TITAN RTX 不支持 Ampere Flash Attention，SAM3 使用兼容路径，速度较慢；
-- 长视频调度器已完成自动化代码和隔离单元测试，仍需使用真实 3～10 分钟视频完成服务器端性能与稳定性测试。
+- 已完成一条150.7秒真实视频的15窗口事件链路测试；事件准确率和事件边界仍需后续优化；
+- 事件主体身份新流程已完成代码和隔离单元测试，仍需在服务器GPU上验证Qwen输出与运行时间。

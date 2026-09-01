@@ -147,18 +147,19 @@ class MaterialFinalizationApplicationTest(unittest.TestCase):
                     }
                 ],
             }
-            identity_reports = {
-                "game:material:1": {
-                    "resolutions": [
-                        {
-                            "track_id": "player_3",
-                            "status": "identified",
-                            "participant_id": "game:jersey:black:17",
-                            "jersey_color": "black",
-                            "jersey_number": "17",
-                        }
-                    ]
-                }
+            event_identity_report = {
+                "event_resolutions": [
+                    {
+                        "event_id": "game:event:1",
+                        "event": "Made Shot",
+                        "track_id": "game:event:1",
+                        "track_references": ["window_00001/player_3"],
+                        "status": "identified",
+                        "participant_id": "game:jersey:black:17",
+                        "jersey_color": "black",
+                        "jersey_number": "17",
+                    }
+                ]
             }
 
             result = application.run(
@@ -166,7 +167,7 @@ class MaterialFinalizationApplicationTest(unittest.TestCase):
                 source_video_path=root / "source.mp4",
                 timeline_report=timeline,
                 output_directory=root / "materials",
-                identity_reports=identity_reports,
+                event_identity_report=event_identity_report,
             )
 
             self.assertEqual(result["registered_material_ids"], ["game:material:1"])
@@ -175,6 +176,10 @@ class MaterialFinalizationApplicationTest(unittest.TestCase):
             self.assertEqual(len(by_event), 1)
             self.assertEqual(len(by_person), 1)
             self.assertEqual(by_event[0].video_path.name, "00000.mp4")
+            self.assertEqual(
+                by_event[0].events[0].participant_id,
+                "game:jersey:black:17",
+            )
 
 
 if __name__ == "__main__":

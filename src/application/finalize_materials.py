@@ -38,10 +38,15 @@ class MaterialFinalizationApplication:
         timeline_report: Mapping[str, Any],
         output_directory: str | Path,
         identity_reports: Mapping[str, Mapping[str, Any]] | None = None,
+        event_identity_report: Mapping[str, Any] | None = None,
         replace_database_records: bool = False,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """完成最终素材阶段；身份报告缺失时仍登记事件素材。"""
+        """完成最终素材阶段；身份报告缺失时仍登记事件素材。
+
+        新流程优先使用按事件生成的主体身份。``identity_reports`` 仅保留给
+        旧的素材级身份报告入口，避免已有诊断脚本立即失效。
+        """
         raw_drafts = timeline_report.get("material_drafts", [])
         raw_events = timeline_report.get("events", [])
         if not isinstance(raw_drafts, list) or not isinstance(raw_events, list):
@@ -63,15 +68,67 @@ class MaterialFinalizationApplication:
             identity_reports=identity_reports or {},
         )
         participants_by_material = association["material_participants"]
+        event_identity_by_id: dict[str, Mapping[str, Any]] = {}
+        if isinstance(event_identity_report, Mapping):
+            raw_resolutions = event_identity_report.get("event_resolutions", [])
+            if isinstance(raw_resolutions, Sequence) and not isinstance(
+                raw_resolutions, (str, bytes)
+            ):
+                for value in raw_resolutions:
+                    if isinstance(value, Mapping) and value.get("event_id") is not None:
+                        event_identity_by_id[str(value["event_id"])] = value
 
         registered_ids: list[str] = []
         for material in exported:
-            related_events = [
-                event_by_id[event_id]
-                for event_id in material.event_ids
-                if event_id in event_by_id
-            ]
-            references = participants_by_material.get(material.material_id, [])
+            related_events: list[dict[str, Any]] = []
+            event_references: list[dict[str, Any]] = []
+            seen_references: set[tuple[str, str]] = set()
+            for event_id in material.event_ids:
+                source_event = event_by_id.get(event_id)
+                if source_event is None:
+                    continue
+                event = dict(source_event)
+                identity = event_identity_by_id.get(event_id)
+                if identity is not None:
+                    event.update(
+                        {
+                            "participant_id": identity.get("participant_id"),
+                            "identity_status": identity.get("status"),
+                            "jersey_color": identity.get("jersey_color"),
+                            "jersey_number": identity.get("jersey_number"),
+                            "player_name": identity.get("player_name"),
+                        }
+                    )
+                    participant_id = identity.get("participant_id")
+                    if participant_id is not None:
+                        track_references = identity.get("track_references", [])
+                        track_id = (
+                            str(track_references[0])
+                            if isinstance(track_references, Sequence)
+                            and not isinstance(track_references, (str, bytes))
+                            and track_references
+                            else str(identity.get("track_id") or event_id)
+                        )
+                        key = (str(participant_id), track_id)
+                        if key not in seen_references:
+                            seen_references.add(key)
+                            event_references.append(
+                                {
+                                    "participant_id": str(participant_id),
+                                    "track_id": track_id,
+                                    "jersey_color": identity.get("jersey_color"),
+                                    "jersey_number": identity.get("jersey_number"),
+                                    "player_name": identity.get("player_name"),
+                                    "identity_status": identity.get("status"),
+                                }
+                            )
+                related_events.append(event)
+
+            references = (
+                event_references
+                if event_identity_by_id
+                else participants_by_material.get(material.material_id, [])
+            )
             item = self.catalog.build_final_material(
                 material_id=material.material_id,
                 source_video_id=source_video_id,
@@ -108,6 +165,7 @@ class MaterialFinalizationApplication:
             "dry_run": dry_run,
             "exported_materials": [value.to_dict() for value in exported],
             "identity_association": association,
+            "event_identity_available": bool(event_identity_by_id),
             "registered_material_ids": registered_ids,
         }
 
@@ -152,6 +210,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="可选 JSON：键为 material_id，值为对应身份报告路径。",
     )
+    parser.add_argument(
+        "--event-identity-json",
+        type=Path,
+        default=None,
+        help="可选的事件主体身份报告；优先于旧素材身份索引。",
+    )
     parser.add_argument("--ffmpeg-binary", default="ffmpeg")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--replace-database-records", action="store_true")
@@ -165,6 +229,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     timeline = _read_json_object(args.timeline_json, "时间线报告")
     identity_reports = _read_identity_index(args.identity_index_json)
+    event_identity_report = (
+        _read_json_object(args.event_identity_json, "事件主体身份报告")
+        if args.event_identity_json is not None
+        else None
+    )
     application = MaterialFinalizationApplication(
         exporter=MaterialExporter(args.ffmpeg_binary, args.overwrite),
         catalog=CatalogService(),
@@ -176,6 +245,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         timeline_report=timeline,
         output_directory=args.output_directory,
         identity_reports=identity_reports,
+        event_identity_report=event_identity_report,
         replace_database_records=args.replace_database_records,
         dry_run=args.dry_run,
     )

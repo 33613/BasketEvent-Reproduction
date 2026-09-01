@@ -163,34 +163,49 @@ class FakeMaterialExporter:
 
 
 class FakeIdentityProcessor:
-    """为最终素材生成一条确定的球衣身份。"""
+    """为时间线事件生成一条确定的主体球衣身份。"""
 
     def __init__(self) -> None:
         """记录实际处理次数。"""
         self.call_count = 0
 
-    def run(self, *, source_video_id, material, output_directory):
-        """写出 CrossMaterialIdentityAssociator 可读取的报告。"""
+    def run(
+        self,
+        *,
+        source_video_id,
+        timeline_report,
+        window_video_directory,
+        raw_tracks_directory,
+        cache_directory,
+        output_path,
+    ):
+        """写出事件编号到稳定人物编号的测试报告。"""
         self.call_count += 1
-        output_directory.mkdir(parents=True, exist_ok=True)
-        report = output_directory / "identity.json"
-        report.write_text(
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
             json.dumps(
                 {
-                    "resolutions": [
+                    "sample_count_per_track_reference": 10,
+                    "pad_ratio": 0.0,
+                    "event_resolutions": [
                         {
-                            "track_id": "player_0",
+                            "event_id": event["event_id"],
+                            "event": event["event"],
+                            "track_id": event["event_id"],
+                            "track_references": event["track_references"],
                             "status": "identified",
+                            "participant_id": "video-test:jersey:white:13",
                             "jersey_color": "white",
                             "jersey_number": "13",
                             "player_name": None,
                         }
-                    ]
+                        for event in timeline_report["events"]
+                    ],
                 }
             ),
             encoding="utf-8",
         )
-        return report
+        return output_path
 
 
 class LongVideoSchedulerTest(unittest.TestCase):
@@ -247,6 +262,10 @@ class LongVideoSchedulerTest(unittest.TestCase):
             materials = ProductDatabase.open(job_root / "product_data").list_materials()
             self.assertEqual(len(materials), 1)
             self.assertEqual(materials[0].participants[0].jersey_number, "13")
+            self.assertEqual(
+                materials[0].events[0].participant_id,
+                "video-test:jersey:white:13",
+            )
 
     def test_cli_defaults_to_repository_test_runtime(self) -> None:
         """默认运行数据必须位于 tests/long_video_runtime。"""

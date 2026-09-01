@@ -14,6 +14,8 @@ class EventTag:
     event: str
     confidence: float
     player_id: str | None = None
+    participant_id: str | None = None
+    identity_status: str | None = None
     start_seconds: float | None = None
     end_seconds: float | None = None
 

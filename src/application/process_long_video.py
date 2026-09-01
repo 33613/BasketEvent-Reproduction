@@ -9,10 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
-import subprocess
-import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,21 +24,19 @@ from src.core.config import SETTINGS, Settings
 from src.modules.catalog import CatalogService
 from src.modules.database import ProductDatabase
 from src.modules.event_recognition import EventTimelineService
-from src.modules.identity import CrossMaterialIdentityAssociator
+from src.modules.identity import (
+    CrossMaterialIdentityAssociator,
+    EventActorIdentityService,
+)
+from src.modules.identity.resolver import IdentityResolver, RosterLookup
 from src.modules.ingestion import VideoAsset, VideoIngestionService
-from src.modules.materials import ExportedMaterial, MaterialExporter
+from src.modules.materials import MaterialExporter
 from src.modules.segmentation import LongVideoSegmenter, VideoSegment
 
 
 def _utc_now() -> str:
     """返回便于写入 JSON 的 UTC 时间。"""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _safe_component(value: str) -> str:
-    """把业务编号转换为 Windows 和 Linux 都可用的目录名。"""
-    normalized = re.sub(r"[^0-9A-Za-z_.-]+", "_", value.strip())
-    return normalized.strip("._") or "item"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -87,17 +81,20 @@ class WindowProcessor(Protocol):
         ...
 
 
-class MaterialIdentityProcessor(Protocol):
-    """约束最终素材身份处理器。"""
+class EventIdentityProcessor(Protocol):
+    """约束基于窗口缓存的事件主体身份处理器。"""
 
     def run(
         self,
         *,
         source_video_id: str,
-        material: ExportedMaterial,
-        output_directory: Path,
+        timeline_report: Mapping[str, Any],
+        window_video_directory: Path,
+        raw_tracks_directory: Path,
+        cache_directory: Path,
+        output_path: Path,
     ) -> Path:
-        """处理一段最终素材并返回身份报告路径。"""
+        """处理全部非空事件主体，并返回一份身份报告路径。"""
         ...
 
 
@@ -147,6 +144,11 @@ class LongVideoJobPaths:
         return self.job_root / "window_artifacts"
 
     @property
+    def raw_tracks_directory(self) -> Path:
+        """返回15个固定窗口已经缓存的SAM3原始轨迹目录。"""
+        return self.window_artifacts_root / self.video_id / "tracks" / "raw"
+
+    @property
     def timeline(self) -> Path:
         """返回源视频全局事件时间线。"""
         return self.job_root / "event_timeline.json"
@@ -157,14 +159,14 @@ class LongVideoJobPaths:
         return self.job_root / "final_materials"
 
     @property
-    def final_identity(self) -> Path:
-        """返回最终素材身份中间结果目录。"""
-        return self.job_root / "final_identity"
+    def event_identity(self) -> Path:
+        """返回事件主体身份汇总报告。"""
+        return self.job_root / "event_identity.json"
 
     @property
-    def identity_index(self) -> Path:
-        """返回素材编号到身份报告的索引。"""
-        return self.job_root / "identity_index.json"
+    def event_identity_tracks(self) -> Path:
+        """返回唯一窗口轨迹的Qwen逐帧证据缓存目录。"""
+        return self.job_root / "event_identity_tracks"
 
     @property
     def product_data(self) -> Path:
@@ -188,6 +190,8 @@ class LongVideoSchedulerConfig:
     max_attempts_per_run: int = 2
     allow_partial: bool = False
     with_identity: bool = False
+    identity_num_crops: int = 10
+    identity_pad_ratio: float = 0.0
     resume: bool = True
     overwrite_windows: bool = False
     ffmpeg_binary: str = "ffmpeg"
@@ -196,136 +200,79 @@ class LongVideoSchedulerConfig:
         """在启动昂贵模型前检查调度参数。"""
         if self.max_attempts_per_run <= 0:
             raise ValueError("max_attempts_per_run 必须为正数")
+        if self.identity_num_crops <= 0:
+            raise ValueError("identity_num_crops 必须为正数")
+        if self.identity_pad_ratio < 0:
+            raise ValueError("identity_pad_ratio 不能为负数")
         if not self.resume and not self.overwrite_windows:
             raise ValueError("关闭断点续跑时必须同时覆盖固定窗口")
 
 
-class SubprocessMaterialIdentityProcessor:
-    """通过已有命令行模块处理最终素材的轨迹和身份。"""
+class CachedWindowEventIdentityProcessor:
+    """复用窗口SAM3 bbox，并在一次模型加载中识别全部事件主体。"""
 
     def __init__(
         self,
         *,
         settings: Settings,
-        pipeline_config: PipelineConfig,
         identity_gpus: str = "0",
         roster_json: Path | None = None,
-        resume: bool = True,
+        sample_count: int = 10,
+        pad_ratio: float = 0.0,
     ) -> None:
-        """保存模型路径、GPU、名单和断点续跑策略。"""
+        """保存Qwen设备、可选名单和事件轨迹取样参数。"""
         self.settings = settings
-        self.pipeline_config = pipeline_config
         self.identity_gpus = identity_gpus
         self.roster_json = roster_json
-        self.resume = resume
-
-    @staticmethod
-    def _nonempty(path: Path) -> bool:
-        """判断一个阶段产物是否存在且非空。"""
-        return path.is_file() and path.stat().st_size > 0
-
-    @staticmethod
-    def _environment() -> dict[str, str]:
-        """为模型子进程构造隔离环境。"""
-        environment = os.environ.copy()
-        environment["PYTHONNOUSERSITE"] = "1"
-        environment["TOKENIZERS_PARALLELISM"] = "false"
-        return environment
-
-    def _run_command(self, command: Sequence[str], log_path: Path) -> None:
-        """实时显示子进程输出并保存日志。"""
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        print(" ".join(str(value) for value in command), flush=True)
-        with log_path.open("w", encoding="utf-8") as log_file:
-            process = subprocess.Popen(
-                [str(value) for value in command],
-                cwd=self.settings.project_root,
-                env=self._environment(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-            assert process.stdout is not None
-            for line in process.stdout:
-                print(line, end="", flush=True)
-                log_file.write(line)
-            return_code = process.wait()
-        if return_code != 0:
-            raise subprocess.CalledProcessError(return_code, command)
+        self.sample_count = sample_count
+        self.pad_ratio = pad_ratio
 
     def run(
         self,
         *,
         source_video_id: str,
-        material: ExportedMaterial,
-        output_directory: Path,
+        timeline_report: Mapping[str, Any],
+        window_video_directory: Path,
+        raw_tracks_directory: Path,
+        cache_directory: Path,
+        output_path: Path,
     ) -> Path:
-        """依次运行 SAM3 和身份服务，并返回身份审计报告。"""
-        output_directory.mkdir(parents=True, exist_ok=True)
-        raw_tracks = output_directory / "raw_tracks.json"
-        identity_tracks = output_directory / "identity_tracks.json"
-        identity_report = output_directory / "identity_tracks_identity.json"
+        """加载一次Qwen，依次处理时间线引用的唯一人物轨迹。"""
+        import torch
+        from src.modules.identity.qwen_observer import QwenTrackObserver
+        from src.modules.identity.sampling import TrackSampler
 
-        if not (self.resume and self._nonempty(raw_tracks)):
-            sam3_command = [
-                sys.executable,
-                "-u",
-                "-m",
-                "src.modules.tracking.sam3_tracker",
-                "--video_path",
-                str(material.video_path),
-                "--json_save_path",
-                str(raw_tracks),
-                "--gpus_to_use",
-                self.pipeline_config.sam3_gpus,
-                "--sam3_checkpoint",
-                str(self.settings.sam3_checkpoint),
-                "--sam3_bpe",
-                str(self.settings.sam3_bpe),
-                "--max-num-objects",
-                str(self.pipeline_config.max_num_objects),
-                "--max-ball-objects",
-                str(self.pipeline_config.max_ball_objects),
-                "--sam3-num-maskmem",
-                str(self.pipeline_config.sam3_num_maskmem),
-                "--sam3-max-cond-frames",
-                str(self.pipeline_config.sam3_max_cond_frames),
-            ]
-            if self.pipeline_config.offload_video_to_cpu:
-                sam3_command.append("--offload-video-to-cpu")
-            if self.pipeline_config.offload_state_to_cpu:
-                sam3_command.append("--offload-state-to-cpu")
-            self._run_command(sam3_command, output_directory / "sam3.log")
-
-        if not (self.resume and self._nonempty(identity_report)):
-            identity_command = [
-                sys.executable,
-                "-u",
-                "-m",
-                "src.modules.identity.service",
-                "--video_path",
-                str(material.video_path),
-                "--bbox_json_path",
-                str(raw_tracks),
-                "--json_save_path",
-                str(identity_tracks),
-                "--game_id",
-                source_video_id,
-                "--gpus_to_use",
-                self.identity_gpus,
-                "--qwen_model",
-                str(self.settings.qwen_model),
-            ]
-            if self.roster_json is not None:
-                identity_command.extend(["--roster_json", str(self.roster_json)])
-            self._run_command(identity_command, output_directory / "identity.log")
-
-        if not self._nonempty(identity_report):
-            raise RuntimeError(f"身份服务没有生成报告：{identity_report}")
-        return identity_report
+        model_path = self.settings.require_directory(
+            self.settings.qwen_model, "Qwen模型"
+        )
+        device = (
+            f"cuda:{str(self.identity_gpus).split(',')[0]}"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
+        observer = QwenTrackObserver.from_pretrained(
+            str(model_path),
+            device=device,
+            local_files_only=self.settings.hf_local_files_only,
+        )
+        roster = RosterLookup.from_file(self.roster_json)
+        service = EventActorIdentityService(
+            sampler=TrackSampler(
+                sample_count=self.sample_count,
+                pad_ratio=self.pad_ratio,
+            ),
+            observer=observer,
+            resolver=IdentityResolver(roster),
+        )
+        report = service.process(
+            source_video_id=source_video_id,
+            timeline_report=timeline_report,
+            window_video_directory=window_video_directory,
+            raw_tracks_directory=raw_tracks_directory,
+            cache_directory=cache_directory,
+        )
+        _write_json_atomic(output_path, report)
+        return output_path
 
 
 class LongVideoScheduler:
@@ -342,7 +289,7 @@ class LongVideoScheduler:
         window_processor: WindowProcessor | None = None,
         timeline_service: EventTimelineService | None = None,
         material_exporter: MaterialExporter | None = None,
-        identity_processor: MaterialIdentityProcessor | None = None,
+        identity_processor: EventIdentityProcessor | None = None,
     ) -> None:
         """注入可替换模块；默认组合项目现有实现。"""
         self.settings = settings
@@ -409,6 +356,10 @@ class LongVideoScheduler:
                     "max_attempts_per_run": self.scheduler_config.max_attempts_per_run,
                     "allow_partial": self.scheduler_config.allow_partial,
                     "with_identity": self.scheduler_config.with_identity,
+                    "identity": {
+                        "sample_count": self.scheduler_config.identity_num_crops,
+                        "pad_ratio": self.scheduler_config.identity_pad_ratio,
+                    },
                 },
             }
         )
@@ -423,6 +374,7 @@ class LongVideoScheduler:
             state["windows"][segment.segment_id].setdefault("status", "pending")
             state["windows"][segment.segment_id].setdefault("attempt_count", 0)
         if not self.scheduler_config.with_identity:
+            state.pop("identity", None)
             state.pop("identities", None)
         return state
 
@@ -507,82 +459,86 @@ class LongVideoScheduler:
             _write_json_atomic(job_paths.state, state)
         return predictions, failed
 
-    def _process_identities(
+    def _process_event_identity(
         self,
         *,
         job_paths: LongVideoJobPaths,
-        materials: Sequence[ExportedMaterial],
+        timeline_report: Mapping[str, Any],
         state: dict[str, Any],
-    ) -> tuple[dict[str, dict[str, Any]], list[str]]:
-        """批量处理最终素材身份；单段失败只产生警告。"""
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        """复用窗口轨迹处理所有事件主体；失败时保留无身份事件素材。"""
         if self.identity_processor is None:
             raise RuntimeError("with_identity=True 但没有配置身份处理器")
-        identity_state = state.setdefault("identities", {})
-        reports: dict[str, dict[str, Any]] = {}
-        failed: list[str] = []
-        for material in materials:
-            item_state = identity_state.setdefault(
-                material.material_id, {"status": "pending", "attempt_count": 0}
-            )
-            report_value = item_state.get("report")
-            report_path = Path(str(report_value)) if report_value else None
-            if (
-                self.scheduler_config.resume
-                and item_state.get("status") == "succeeded"
-                and report_path is not None
-                and report_path.is_file()
-            ):
-                reports[material.material_id] = _read_json_object(report_path)
-                continue
-
-            succeeded = False
-            output = job_paths.final_identity / _safe_component(material.material_id)
-            for _ in range(self.scheduler_config.max_attempts_per_run):
-                item_state["status"] = "running"
-                item_state["attempt_count"] = int(item_state["attempt_count"]) + 1
-                item_state["started_utc"] = _utc_now()
-                _write_json_atomic(job_paths.state, state)
-                try:
-                    report_path = self.identity_processor.run(
-                        source_video_id=job_paths.video_id,
-                        material=material,
-                        output_directory=output,
-                    )
-                    reports[material.material_id] = _read_json_object(report_path)
-                    item_state.update(
-                        {
-                            "status": "succeeded",
-                            "report": str(report_path),
-                            "finished_utc": _utc_now(),
-                        }
-                    )
-                    item_state.pop("error", None)
-                    succeeded = True
-                    break
-                except Exception as error:
-                    item_state.update(
-                        {
-                            "status": "failed",
-                            "finished_utc": _utc_now(),
-                            "error": {
-                                "type": type(error).__name__,
-                                "message": str(error),
-                            },
-                        }
-                    )
-                    _write_json_atomic(job_paths.state, state)
-            if not succeeded:
-                failed.append(material.material_id)
-            _write_json_atomic(job_paths.state, state)
-        _write_json_atomic(
-            job_paths.identity_index,
-            {
-                material_id: item["report"]
-                for material_id, item in identity_state.items()
-                if item.get("status") == "succeeded"
-            },
+        identity_state = state.setdefault(
+            "identity", {"status": "pending", "attempt_count": 0}
         )
-        return reports, failed
+        report_value = identity_state.get("report")
+        report_path = Path(str(report_value)) if report_value else None
+        if (
+            self.scheduler_config.resume
+            and identity_state.get("status") in {"succeeded", "completed_with_warnings"}
+            and report_path is not None
+            and report_path.is_file()
+        ):
+            existing_report = _read_json_object(report_path)
+            if (
+                existing_report.get("sample_count_per_track_reference")
+                == self.scheduler_config.identity_num_crops
+                and float(existing_report.get("pad_ratio", -1.0))
+                == self.scheduler_config.identity_pad_ratio
+                and int(existing_report.get("failed_track_reference_count") or 0) == 0
+            ):
+                return existing_report, []
+
+        for _ in range(self.scheduler_config.max_attempts_per_run):
+            identity_state["status"] = "running"
+            identity_state["attempt_count"] = (
+                int(identity_state.get("attempt_count", 0)) + 1
+            )
+            identity_state["started_utc"] = _utc_now()
+            _write_json_atomic(job_paths.state, state)
+            try:
+                report_path = self.identity_processor.run(
+                    source_video_id=job_paths.video_id,
+                    timeline_report=timeline_report,
+                    window_video_directory=job_paths.window_video_directory,
+                    raw_tracks_directory=job_paths.raw_tracks_directory,
+                    cache_directory=job_paths.event_identity_tracks,
+                    output_path=job_paths.event_identity,
+                )
+                report = _read_json_object(report_path)
+                failed_references = [
+                    str(reference)
+                    for reference, value in report.get("track_evidence", {}).items()
+                    if isinstance(value, Mapping) and value.get("status") != "completed"
+                ]
+                identity_state.update(
+                    {
+                        "status": (
+                            "completed_with_warnings"
+                            if failed_references
+                            else "succeeded"
+                        ),
+                        "report": str(report_path),
+                        "finished_utc": _utc_now(),
+                    }
+                )
+                identity_state.pop("error", None)
+                _write_json_atomic(job_paths.state, state)
+                return report, failed_references
+            except Exception as error:
+                identity_state.update(
+                    {
+                        "status": "failed",
+                        "finished_utc": _utc_now(),
+                        "error": {
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        },
+                    }
+                )
+                _write_json_atomic(job_paths.state, state)
+        return None, ["event_actor_identity"]
 
     def run(self, input_video: str | Path) -> dict[str, Any]:
         """运行或恢复整条长视频产品链路。"""
@@ -655,12 +611,12 @@ class LongVideoScheduler:
             output_directory=job_paths.final_materials,
         )
 
-        identity_reports: dict[str, dict[str, Any]] = {}
+        event_identity_report: dict[str, Any] | None = None
         failed_identities: list[str] = []
         if self.scheduler_config.with_identity:
-            identity_reports, failed_identities = self._process_identities(
+            event_identity_report, failed_identities = self._process_event_identity(
                 job_paths=job_paths,
-                materials=materials,
+                timeline_report=timeline,
                 state=state,
             )
 
@@ -676,7 +632,7 @@ class LongVideoScheduler:
             source_video_path=video.source_path,
             timeline_report=timeline,
             output_directory=job_paths.final_materials,
-            identity_reports=identity_reports,
+            event_identity_report=event_identity_report,
             replace_database_records=True,
         )
         _write_json_atomic(job_paths.finalization_report, finalization)
@@ -717,6 +673,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-partial", action="store_true")
     parser.add_argument("--with-identity", action="store_true")
     parser.add_argument("--identity-gpus", default="0")
+    parser.add_argument("--identity-num-crops", type=int, default=10)
+    parser.add_argument("--identity-pad-ratio", type=float, default=0.0)
     parser.add_argument("--roster-json", type=Path, default=None)
     parser.add_argument("--sam3-gpus", default="0,1")
     parser.add_argument("--playnet-gpu", type=int, default=0)
@@ -764,17 +722,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         max_attempts_per_run=args.max_attempts_per_run,
         allow_partial=args.allow_partial,
         with_identity=args.with_identity,
+        identity_num_crops=args.identity_num_crops,
+        identity_pad_ratio=args.identity_pad_ratio,
         resume=not args.no_resume,
         overwrite_windows=args.overwrite_windows,
         ffmpeg_binary=args.ffmpeg_binary,
     )
     identity_processor = (
-        SubprocessMaterialIdentityProcessor(
+        CachedWindowEventIdentityProcessor(
             settings=SETTINGS,
-            pipeline_config=pipeline_config,
             identity_gpus=args.identity_gpus,
             roster_json=args.roster_json,
-            resume=not args.no_resume,
+            sample_count=args.identity_num_crops,
+            pad_ratio=args.identity_pad_ratio,
         )
         if args.with_identity
         else None

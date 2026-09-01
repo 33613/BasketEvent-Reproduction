@@ -88,8 +88,16 @@ class TrackSampler:
         video_path: str | Path,
         annotations: Mapping[str, Any],
         track_prefix: str = "player",
+        track_ids: Sequence[str] | None = None,
     ) -> dict[str, list[TrackCrop]]:
-        """为指定类型的每条轨迹提取按时间排序的截图。"""
+        """为指定类型的轨迹提取按时间排序的截图。
+
+        ``track_ids`` 为空时处理所有匹配前缀的轨迹；传入编号时只读取这些
+        轨迹。事件身份阶段使用后者，避免把同一窗口里的无关球员送入Qwen。
+        """
+        selected_track_ids = (
+            {str(track_id) for track_id in track_ids} if track_ids is not None else None
+        )
         selected_frames: dict[
             str, list[tuple[int, tuple[float, float, float, float]]]
         ] = {}
@@ -98,6 +106,8 @@ class TrackSampler:
             if not track_id.startswith(track_prefix) or not isinstance(
                 payload, Mapping
             ):
+                continue
+            if selected_track_ids is not None and track_id not in selected_track_ids:
                 continue
             trajectory = payload.get("trajectory")
             if not isinstance(trajectory, list):

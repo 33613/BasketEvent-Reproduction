@@ -1,6 +1,6 @@
 """保存 SQLite 产品数据库的版本和建表语句。"""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_versions (
@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS material_events (
     event_name TEXT NOT NULL,
     confidence REAL NOT NULL,
     player_id TEXT,
+    participant_id TEXT,
+    identity_status TEXT,
     start_seconds REAL,
     end_seconds REAL,
     FOREIGN KEY (material_id)

@@ -42,6 +42,16 @@ class CatalogService:
                     if value.get("global_track_id") is not None
                     else None
                 ),
+                participant_id=(
+                    str(value["participant_id"])
+                    if value.get("participant_id") is not None
+                    else None
+                ),
+                identity_status=(
+                    str(value["identity_status"])
+                    if value.get("identity_status") is not None
+                    else None
+                ),
                 start_seconds=(
                     float(value["evidence_start_seconds"])
                     if value.get("evidence_start_seconds") is not None
@@ -183,19 +193,42 @@ class CatalogService:
     ) -> tuple[EventTag, ...]:
         """优先读取时序事件；缺失时回退到球员级预测。"""
         events: list[EventTag] = []
+        prediction_by_player = {
+            str(value["player_id"]): value
+            for value in predictions
+            if isinstance(value, Mapping) and value.get("player_id") is not None
+        }
         for value in temporal_events:
             if not isinstance(value, Mapping):
                 continue
             event_name = str(value.get("event") or "blank")
             if event_name == "blank":
                 continue
+            player_id = (
+                str(value["player_id"]) if value.get("player_id") is not None else None
+            )
+            player_metadata = prediction_by_player.get(player_id or "", {})
             events.append(
                 EventTag(
                     event=event_name,
                     confidence=float(value.get("confidence") or 0.0),
-                    player_id=(
-                        str(value["player_id"])
-                        if value.get("player_id") is not None
+                    player_id=player_id,
+                    participant_id=(
+                        str(
+                            value.get("participant_id")
+                            or player_metadata.get("participant_id")
+                        )
+                        if value.get("participant_id") is not None
+                        or player_metadata.get("participant_id") is not None
+                        else None
+                    ),
+                    identity_status=(
+                        str(
+                            value.get("identity_status")
+                            or player_metadata.get("identity_status")
+                        )
+                        if value.get("identity_status") is not None
+                        or player_metadata.get("identity_status") is not None
                         else None
                     ),
                     start_seconds=(
@@ -226,6 +259,16 @@ class CatalogService:
                     player_id=(
                         str(value["player_id"])
                         if value.get("player_id") is not None
+                        else None
+                    ),
+                    participant_id=(
+                        str(value["participant_id"])
+                        if value.get("participant_id") is not None
+                        else None
+                    ),
+                    identity_status=(
+                        str(value["identity_status"])
+                        if value.get("identity_status") is not None
                         else None
                     ),
                 )

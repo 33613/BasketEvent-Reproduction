@@ -116,6 +116,26 @@ class ProductDatabase:
                 raise RuntimeError(
                     f"数据库版本 {current} 高于代码支持的版本 {SCHEMA_VERSION}"
                 )
+            event_columns = {
+                str(value["name"])
+                for value in connection.execute(
+                    "PRAGMA table_info(material_events)"
+                ).fetchall()
+            }
+            if "participant_id" not in event_columns:
+                connection.execute(
+                    "ALTER TABLE material_events ADD COLUMN participant_id TEXT"
+                )
+            if "identity_status" not in event_columns:
+                connection.execute(
+                    "ALTER TABLE material_events ADD COLUMN identity_status TEXT"
+                )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_material_events_participant
+                ON material_events (participant_id, event_name, confidence)
+                """
+            )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_versions(version) VALUES (?)",
                 (SCHEMA_VERSION,),
@@ -171,6 +191,8 @@ class ProductDatabase:
                     event=str(value["event_name"]),
                     confidence=float(value["confidence"]),
                     player_id=value["player_id"],
+                    participant_id=value["participant_id"],
+                    identity_status=value["identity_status"],
                     start_seconds=value["start_seconds"],
                     end_seconds=value["end_seconds"],
                 )
@@ -293,8 +315,8 @@ class ProductDatabase:
                     """
                     INSERT INTO material_events(
                         material_id, event_name, confidence, player_id,
-                        start_seconds, end_seconds
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        participant_id, identity_status, start_seconds, end_seconds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -302,6 +324,8 @@ class ProductDatabase:
                             event.event,
                             event.confidence,
                             event.player_id,
+                            event.participant_id,
+                            event.identity_status,
                             event.start_seconds,
                             event.end_seconds,
                         )
@@ -349,7 +373,19 @@ class ProductDatabase:
         """按事件、人物和最低置信度组合查询素材。"""
         clauses: list[str] = []
         parameters: list[Any] = []
-        if event is not None:
+        if event is not None and participant_id is not None:
+            clauses.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM material_events AS e
+                    WHERE e.material_id = m.material_id
+                      AND e.event_name = ? AND e.confidence >= ?
+                      AND e.participant_id = ?
+                )
+                """
+            )
+            parameters.extend((event, float(minimum_confidence), participant_id))
+        elif event is not None:
             clauses.append(
                 """
                 EXISTS (
@@ -360,17 +396,24 @@ class ProductDatabase:
                 """
             )
             parameters.extend((event, float(minimum_confidence)))
-        if participant_id is not None:
+        elif participant_id is not None:
             clauses.append(
                 """
-                EXISTS (
-                    SELECT 1 FROM material_participants AS p
-                    WHERE p.material_id = m.material_id
-                      AND p.participant_id = ?
+                (
+                    EXISTS (
+                        SELECT 1 FROM material_events AS e
+                        WHERE e.material_id = m.material_id
+                          AND e.participant_id = ?
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM material_participants AS p
+                        WHERE p.material_id = m.material_id
+                          AND p.participant_id = ?
+                    )
                 )
                 """
             )
-            parameters.append(participant_id)
+            parameters.extend((participant_id, participant_id))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         statement = f"""
             SELECT m.* FROM materials AS m

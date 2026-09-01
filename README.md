@@ -57,53 +57,53 @@ BasketEvent/
 └── README.md
 ```
 
-## 主要模块
+## 各模块现有逻辑
+
+### application / process_long_video：长视频总调度
+
+长视频处理的应用入口，依次调用视频接入、固定窗口切分、窗口模型处理、全局时间线、素材导出、身份处理和数据库登记。`job_state.json` 记录每个窗口的状态、重试次数和各阶段结果，SSH 中断后可以复用已有结果继续运行。
 
 ### ingestion：视频接入
 
-检查输入文件，读取时长、帧率、分辨率和帧数，并为同一份输入生成稳定的视频编号。BARD 转换工具也位于此模块，但 BARD 是研究数据，不进入产品数据库。
+读取输入视频路径与媒体元数据，并根据视频内容生成稳定的 `video_id`。源视频是后续窗口、全局时间线、最终素材和数据库记录的共同来源。BARD 转换工具也位于该模块，但 BARD 属于研究数据，不进入产品数据库。
 
-### segmentation：模型输入切窗
+### segmentation：固定重叠分析窗口
 
-当前按固定时长切出带重叠的窗口。每个窗口记录源视频中的全局起止时间和帧号。窗口仅用于运行模型，不是最终交付给用户的素材。
+按照固定时长与重叠时间规划模型输入窗口，使用 FFmpeg 从源视频导出窗口 MP4，并写出 `segments.json` 窗口清单。每个窗口记录源视频中的全局起止时间和帧号。当前测试配置为 12 秒窗口、2 秒重叠；窗口只用于运行模型，不是最终交付素材。
 
-### tracking：轨迹处理
+### tracking：SAM3 轨迹追踪
 
-- `sam3_tracker.py` 调用 SAM3 生成球员和篮球逐帧边界框；
-- `preparation.py` 校验轨迹、保留所有具有有效边界框的人物并选择篮球候选；
-- TITAN RTX 使用兼容注意力和 CPU 卸载策略。
+`sam3_tracker.py` 在每个窗口上运行 SAM3，追踪画面中的球员和篮球，保存 `player_N`、`ball_N` 形式的逐帧 bbox 轨迹 JSON。窗口成功后，轨迹文件作为缓存供事件识别和后续身份观察共同复用。TITAN RTX 使用兼容注意力与 CPU 卸载策略。
 
-事件识别前不读取 Qwen 的人物判断。
+### tracking / preparation：事件输入轨迹准备
 
-### event_recognition：事件识别与时间线
+`preparation.py` 检查轨迹结构，保留所有具有有效 bbox 的人物轨迹，选择篮球候选，并生成 PlayNet 所需的 clean 轨迹文件。此阶段不读取 Qwen 结果，也不以身份是否识别成功作为人物轨迹保留条件。
 
-- `playnet/`：PlayNet 网络层和模型组装；
-- `inference.py`：TimeSformer 全局特征、人物局部特征和事件推理；
-- `timeline.py`：把窗口内时间映射回源视频、合并重叠窗口的重复事件，并生成待剪范围；
-- `labels.py`：事件标签定义。
+### event_recognition：球员级事件推理
 
-当前事件时间来自 MIL 权重与窗口预测，是产品原型中的诊断性定位，不是人工标注的精确动作边界。
+`inference.py` 使用 TimeSformer 提取全局视频特征和人物局部特征，再由 PlayNet 对每条人物轨迹进行事件推理。窗口预测包含人物级事件、置信度和基于 MIL 权重的诊断性时间片段；`blank` 不进入全局事件素材。`playnet/` 保存网络层和模型组装，`labels.py` 保存事件标签定义。
 
-### materials：最终素材
+### event_recognition / timeline：全局事件时间线
 
-`exporter.py` 根据全局事件时间线，使用 FFmpeg 从原长视频导出最终事件素材。导出的现有非空文件默认复用。
+`timeline.py` 将窗口内事件起止时间加上窗口偏移，映射回原长视频时间；随后合并重叠窗口中的同类重复事件，形成 `event_timeline.json`，并根据事件类型增加素材前后文范围。当前事件边界来自 MIL 权重与窗口预测，属于诊断性时间定位。
 
-### identity：可选身份增强
+### materials：最终事件素材导出
 
-```text
-读取非 blank 事件的 track_references
-  → 定位已有窗口 MP4 和 SAM3 bbox JSON
-  → 只对事件主体轨迹最多均匀抽取 10 帧
-  → Qwen 逐帧观察球衣颜色和号码
-  → 固定规则解析 identified / conflicting / anonymous
-  → 把 participant_id 直接绑定到事件和最终素材
-```
+`exporter.py` 读取时间线中的 `material_drafts`，使用 FFmpeg 从原长视频重新剪出最终事件素材，并保存到 `final_materials/`。已经存在且非空的素材文件默认复用。
 
-同一个“窗口/人物轨迹”被多个事件引用时只观察一次，逐帧证据保存在 `event_identity_tracks/`，中断后可以复用。Qwen 只提供可审计证据，不决定事件轨迹是否进入 PlayNet。当前没有实现 ReID；跨素材只按确定的球衣颜色和号码生成稳定人物编号。
+### identity：事件主体身份观察
 
-### catalog 与 database：产品登记
+身份阶段读取非 `blank` 事件的 `track_references`，定位已有窗口 MP4 和 SAM3 bbox，只对事件主体的唯一“窗口/人物轨迹”最多均匀抽取 10 帧。Qwen 逐帧记录球衣颜色、号码和置信度，固定规则形成 `identified`、`conflicting` 或 `anonymous` 结论。逐帧证据保存在 `event_identity_tracks/`，同一轨迹被多个事件引用时只处理一次。
 
-`catalog` 把素材文件、事件和可选人物整理成统一业务对象；`database` 使用 SQLite 保存素材、事件、人物及其关系。MP4 保存在文件系统，SQLite 只保存元数据和路径。
+Qwen 只提供可审计的身份信息，不决定轨迹是否进入 PlayNet。当前没有实现 ReID；跨窗口与跨素材暂时只按确定的球衣颜色和号码生成稳定人物编号。
+
+### catalog：素材业务对象整理
+
+将最终素材文件、事件标签、原视频事件时间、人物编号和身份状态整理为统一的 `CatalogItem` 业务对象，使应用层不依赖 SQLite 的具体表结构。
+
+### database：产品数据保存与查询
+
+使用 SQLite 保存产品数据，包括素材路径、原视频时间、事件类别、置信度、`participant_id`、球衣属性和事件—人物关系。MP4 仍保存在文件系统，数据库只保存元数据和路径，并支持按事件、人物以及两者组合查询素材。
 
 研究数据与产品数据分离：
 

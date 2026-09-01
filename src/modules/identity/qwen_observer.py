@@ -11,7 +11,6 @@ from src.modules.identity.models import (
     IdentityObservation,
     TrackCrop,
 )
-from src.modules.identity.sampling import build_ball_contact_sheet
 
 
 def _normalize_color(value: Any) -> str | None:
@@ -40,21 +39,73 @@ def _normalize_confidence(value: Any) -> float:
     return mapping.get(str(value).strip().lower(), 0.0)
 
 
-def _parse_json_object(text: str) -> dict[str, Any]:
-    """解析模型输出，并兼容 Markdown 代码围栏。"""
-    cleaned = text.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+def _decode_json_values(text: str) -> list[Any]:
+    """从模型文本中恢复一个或多个完整JSON值。
+
+    Qwen实际输出有时是标准对象，有时会返回顶层数组、连续多个对象，或在
+    JSON前后添加Markdown代码围栏。这里先尝试严格解析；失败后再使用
+    ``raw_decode`` 顺序扫描，避免原先的贪婪正则把多个对象拼在一起而触发
+    ``Extra data``。
+    """
+    cleaned = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        return []
     try:
-        value = json.loads(cleaned)
+        return [json.loads(cleaned)]
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        pass
+
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    cursor = 0
+    while cursor < len(cleaned):
+        match = re.search(r"[\[{]", cleaned[cursor:])
         if match is None:
-            raise ValueError("Qwen 输出中没有可解析的 JSON 对象")
-        value = json.loads(match.group(0))
-    if not isinstance(value, dict):
-        raise ValueError("Qwen 输出的 JSON 顶层必须是对象")
-    return value
+            break
+        start = cursor + match.start()
+        try:
+            value, end = decoder.raw_decode(cleaned, start)
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        values.append(value)
+        cursor = end
+    return values
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """把Qwen的常见JSON变体规范化为一个对象。"""
+    values = _decode_json_values(text)
+    if not values:
+        raise ValueError("Qwen 输出中没有可解析的完整 JSON")
+
+    # 标准的观察结果优先；若模型连续输出多个包装对象则合并其数组。
+    wrapped_observations: list[Any] = []
+    for value in values:
+        if isinstance(value, Mapping) and isinstance(value.get("observations"), list):
+            wrapped_observations.extend(value["observations"])
+    if wrapped_observations:
+        return {"observations": wrapped_observations}
+
+    # 兼容顶层数组，以及逐行连续输出多个 observation 对象。
+    observations: list[dict[str, Any]] = []
+    for value in values:
+        candidates = value if isinstance(value, list) else [value]
+        for candidate in candidates:
+            if isinstance(candidate, Mapping) and (
+                "image_index" in candidate
+                or "is_on_court_player" in candidate
+                or "jersey_number" in candidate
+            ):
+                observations.append(dict(candidate))
+    if observations:
+        return {"observations": observations}
+
+    # 篮球候选等提示仍返回普通单对象，保持原有调用方式。
+    for value in values:
+        if isinstance(value, Mapping):
+            return dict(value)
+    raise ValueError("Qwen 输出中没有可解析的 JSON 对象")
 
 
 class QwenTrackObserver:
@@ -67,6 +118,7 @@ class QwenTrackObserver:
         self.model = model
         self.processor = processor
         self.device = device
+        self.last_output_text: str | None = None
 
     @classmethod
     def from_pretrained(
@@ -148,9 +200,11 @@ Return STRICT JSON only:
         """一次调用观察同一轨迹的多张截图，并保留每张图的独立结论。"""
         if not crops:
             return []
+        self.last_output_text = None
         content = [{"type": "image", "image": crop.image} for crop in crops]
         content.append({"type": "text", "text": self.build_prompt(crops)})
         output_text = self._generate([{"role": "user", "content": content}], 512)
+        self.last_output_text = output_text
         return self.parse_observations(crops, output_text)
 
     @staticmethod
@@ -196,6 +250,8 @@ Return STRICT JSON only:
 
     def select_ball(self, candidates: Sequence[BallCandidate]) -> dict[str, Any]:
         """从多个 SAM3 篮球候选中选择真实比赛用球。"""
+        from src.modules.identity.sampling import build_ball_contact_sheet
+
         if not candidates:
             return {"selected_ball_id": None, "reason": "没有有效篮球候选"}
         if len(candidates) == 1:

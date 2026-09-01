@@ -214,6 +214,9 @@ class EventActorIdentityService:
                     "observations": [asdict(value) for value in observations],
                 }
             )
+            raw_output = getattr(self.observer, "last_output_text", None)
+            if isinstance(raw_output, str) and raw_output.strip():
+                document["raw_qwen_output"] = raw_output
         except Exception as error:  # 单条轨迹失败不能删除事件或中断其他身份。
             document.update(
                 {
@@ -224,6 +227,9 @@ class EventActorIdentityService:
                     },
                 }
             )
+            raw_output = getattr(self.observer, "last_output_text", None)
+            if isinstance(raw_output, str) and raw_output.strip():
+                document["raw_qwen_output"] = raw_output
         _write_json_atomic(cache_path, document)
         return document
 

@@ -222,12 +222,40 @@ tests/long_video_runtime/<video_id>/
 ├── final_materials/           # 重新从长视频导出的最终事件素材
 ├── event_identity.json        # 可选的事件主体身份汇总
 ├── event_identity_tracks/     # 唯一窗口轨迹的Qwen证据缓存
+├── review_visualizations/     # 最终素材的人工复核标注视频
 ├── finalization_report.json   # 最终导出和入库报告
 └── product_data/
     └── database/basketevent.sqlite3
 ```
 
 `tests/long_video_runtime/` 中除说明文件外的输入和产物均被 Git 忽略。
+
+### 生成人工复核视频
+
+长视频任务完成后，可直接复用事件时间线、事件身份和已有 SAM3 轨迹，为
+`final_materials` 中的每段素材生成复核版视频，不会重新运行 SAM3、Qwen 或
+PlayNet。画面只框出事件主体，并显示事件类别、置信度、身份状态、球衣颜色与
+号码、素材内时间、源长视频全局时间和事件证据时间条。
+
+先用一条素材检查显示效果：
+
+```bash
+python -u -m src.application.visualize_final_materials \
+  --job-root tests/long_video_runtime/<video_id> \
+  --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg \
+  --limit 1
+```
+
+确认后生成全部复核视频；已有非空结果会自动复用：
+
+```bash
+python -u -m src.application.visualize_final_materials \
+  --job-root tests/long_video_runtime/<video_id> \
+  --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg
+```
+
+输出位于 `review_visualizations/`，其中 `review_report.json` 记录每条素材、
+事件、身份状态、轨迹引用和主体框覆盖帧数。需要重绘时增加 `--overwrite`。
 
 ## 单窗口诊断
 

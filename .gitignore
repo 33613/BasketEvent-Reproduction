@@ -61,6 +61,10 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# BasketEvent 产品运行数据。目录说明保留在 Git 中，真实数据库与媒体不提交。
+product_data/*
+!product_data/README.md
+
 # Flask stuff:
 instance/
 .webassets-cache
@@ -216,3 +220,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 长视频端到端测试：只提交目录说明，不提交视频、模型输出和 SQLite。
+/tests/long_video_runtime/*
+!/tests/long_video_runtime/README.md
+
+# BARD 评估只提交说明与脚本；媒体、人工标注和实验结果保留在本机/服务器。
+/tests/bard_eval_runtime/*
+!/tests/bard_eval_runtime/README.md

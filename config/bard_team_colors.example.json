@@ -1,0 +1,10 @@
+{
+  "schema_version": "bard_team_colors.v1",
+  "note": "Fill colors by independently inspecting the game, never from action labels.",
+  "games": {
+    "bkn-vs-det-0022400861": {
+      "BRK": "white",
+      "DET": "black"
+    }
+  }
+}

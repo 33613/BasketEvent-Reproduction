@@ -33,6 +33,7 @@ BasketEvent/
 ├── src/
 │   ├── application/                    # 跨模块应用流程
 │   │   ├── process_long_video.py       # 长视频调度、重试、续跑和最终入库
+│   │   ├── evaluate_bard.py            # 独立 BARD 抽样、链路实验与评分
 │   │   ├── process_clip.py             # 单窗口完整模型链路
 │   │   ├── process_video.py            # 视频接入与切窗的可复用用例
 │   │   ├── finalize_materials.py       # 最终素材导出和数据库登记
@@ -47,15 +48,27 @@ BasketEvent/
 │       ├── materials/                  # 最终事件素材导出与可视化
 │       ├── identity/                   # 事件轨迹取样、Qwen观察和规则解析
 │       ├── catalog/                    # 数据库存储前的素材对象整理
+│       ├── evaluation/                 # 论文核心指标，不参与推理决策
 │       └── database/                   # SQLite 保存和查询
 ├── training/                           # Dataset、Solver 和训练入口
 ├── tests/
 │   ├── long_video_runtime/             # 长视频端到端测试输入与运行产物
+│   ├── bard_eval_runtime/              # 独立 BARD 测试包与评估说明
 │   ├── qwen_tests_runtime/             # Qwen 诊断产物
 │   └── track_segment_runtime/           # 人工轨迹片段验证产物
 ├── requirements.txt
 └── README.md
 ```
+
+## 独立测试与论文指标
+
+目前已经跑通素材整理链路，但“运行完成”不等于识别可靠。新增 BARD 评估入口将抽样、人工标注、完整链路运行和评分分开；不依据 Qwen 或 SAM3 成功与否筛测试样本，GT 不进入推理。
+
+评估分为两条：完整产品结果用 BasketballBench Q8 的顺序事件 F1、事件＋身份 F1 和条件身份正确率；人工核验轨迹后的模型结果用 BasketEvent 的人物—事件 Macro-F1、Recall@K 和最高 gate 时间段 Hit。推理报告增加完整类别概率和独立的最高 gate 证据，不改变现有素材生成逻辑。
+
+这是自建 BARD 测试集上的**指标适配**，不是官方 benchmark 复现。数据划分、身份表示和协议差异在报告及说明中明确记录。
+
+完整抽样、标注、校园网直传、服务器运行和评分命令见 [BARD 评估说明](tests/bard_eval_runtime/README.md)。
 
 ## 各模块现有逻辑
 

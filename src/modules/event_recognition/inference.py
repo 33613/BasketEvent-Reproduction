@@ -461,6 +461,21 @@ def build_temporal_prediction_report(
         participant_id = metadata.get("participant_id")
         source_track_id = metadata.get("source_track_id")
         player_name = metadata.get("player_name")
+        # 评估证据单独保存，不改变产品时间线的 gate×类别概率排序。
+        # 原论文 Hit 选择最高 gate 片段；旧版 top-k 时间线不足以还原此结果。
+        paper_gate_segment = None
+        if gate_weights is not None and person_clip_valid[:, person_index].any():
+            valid_gates = gate_weights[:, person_index].masked_fill(
+                ~person_clip_valid[:, person_index], float("-inf")
+            )
+            gate_index = int(valid_gates.argmax().item())
+            gate_frames = sampled_indices[gate_index]
+            paper_gate_segment = {
+                "clip_index": gate_index,
+                "gate_weight": float(valid_gates[gate_index].item()),
+                "start_time": int(gate_frames.min().item()) / fps,
+                "end_time": min(int(gate_frames.max().item()) + 1, total_frames) / fps,
+            }
         player_predictions.append(
             {
                 "player_id": player_id,
@@ -472,6 +487,11 @@ def build_temporal_prediction_report(
                 "label_id": label_id,
                 "event": event_name,
                 "confidence": confidence,
+                "class_probabilities": {
+                    REVERSE_LABEL_MAP.get(index, str(index)): float(value.item())
+                    for index, value in enumerate(player_probability)
+                },
+                "paper_gate_segment": paper_gate_segment,
             }
         )
 

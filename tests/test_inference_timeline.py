@@ -51,6 +51,22 @@ class TemporalPredictionReportTest(unittest.TestCase):
         self.assertEqual(event["clip_index"], 1)
         self.assertEqual(event["start_time"], 3.0)
         self.assertEqual(event["end_time"], 5.1)
+        player = report["player_predictions"][0]
+        self.assertEqual(player["paper_gate_segment"]["clip_index"], 1)
+        self.assertAlmostEqual(sum(player["class_probabilities"].values()), 1, places=6)
+
+    def test_paper_gate_and_product_score_can_select_different_clips(self):
+        """论文最高 gate 和产品 gate×分类概率必须独立保存。"""
+        report = build_temporal_prediction_report(
+            video_path="clip.mp4", trajectory_data={}, player_ids=["player_0"],
+            data={"idx": torch.tensor([[0, 1], [10, 11]]), "fps_in": 10, "total_frames": 20},
+            outputs={"logits_person": torch.tensor([[0., 4.]]),
+                     "logits_clip": torch.tensor([[[4., 0.]], [[0., 4.]]]),
+                     "person_valid": torch.tensor([True]),
+                     "person_clip_valid": torch.tensor([[True], [True]]),
+                     "gate_weights": torch.tensor([[[.8]], [[.2]]])}, timeline_topk=1)
+        self.assertEqual(report["player_predictions"][0]["paper_gate_segment"]["clip_index"], 0)
+        self.assertEqual(report["temporal_events"][0]["clip_index"], 1)
 
     def test_blank_prediction_has_no_timeline_interval(self):
         """Background predictions should remain visible only in the audit list."""

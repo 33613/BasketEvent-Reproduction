@@ -224,3 +224,7 @@ __marimo__/
 # 长视频端到端测试：只提交目录说明，不提交视频、模型输出和 SQLite。
 /tests/long_video_runtime/*
 !/tests/long_video_runtime/README.md
+
+# BARD 评估只提交说明与脚本；媒体、人工标注和实验结果保留在本机/服务器。
+/tests/bard_eval_runtime/*
+!/tests/bard_eval_runtime/README.md

@@ -92,14 +92,15 @@ class BundleTest(unittest.TestCase):
             {"action": "Rebound", "color": "white", "player": "00"}]})
         bundle = self.root / "bundle"
         args = argparse.Namespace(data_root=self.root / "data", output=bundle,
-                                  games=None, game_count=1, seed=123, per_class=1, copy_videos=False)
+                                  games=None, game_count=1, seed=123, per_class=1,
+                                  copy_videos=False, all_clips=False)
         build_bundle(args)
         manifest, annotations = read_json(bundle / "manifest.json"), read_json(bundle / "annotations.json")
         self.assertEqual(len(manifest["items"]), 1)
         self.assertEqual(annotations["samples"][0]["events"][0]["actor"], "white#00")
         with self.assertRaises(ValueError):
             validate_annotations(manifest, annotations)
-        materialize_bundle(bundle)
+        materialize_bundle(bundle, "hardlink")
         self.assertEqual(verify_bundle(bundle)["verified_videos"], 1)
         (bundle / manifest["items"][0]["video"]).write_bytes(b"corrupted")
         with self.assertRaises(ValueError):
@@ -126,9 +127,40 @@ class BundleTest(unittest.TestCase):
         write_json(self.root / "annotations.json", {"samples": [
             {"sample_id": "x", "reviewed": True, "reviewer": "人工", "events": [event()]}]})
         result = score_bundle(argparse.Namespace(bundle=self.root, run_root=self.root / "run",
-                              annotations=None, allow_draft=False, output=None))
+                              annotations=None, allow_draft=False,
+                              accept_bard_silver=False, output=None))
         self.assertEqual(result["full_event"]["reference"], 1)
         self.assertEqual(result["full_event"]["recall"], 0)
+
+    def test_all_clips_includes_known_development_game_and_empty_action_clip(self):
+        game = self.root / "data" / "bkn-vs-det-0022400861"
+        (game / "video").mkdir(parents=True)
+        (game / "description/action").mkdir(parents=True)
+        (game / "video/1.mp4").write_bytes(b"one")
+        (game / "video/2.mp4").write_bytes(b"two")
+        write_json(game / "description/action/1.json", {"actions": []})
+        bundle = self.root / "complete"
+        result = build_bundle(argparse.Namespace(
+            data_root=self.root / "data", output=bundle,
+            games=[game.name], game_count=1, seed=1, per_class=3,
+            copy_videos=False, all_clips=True))
+        self.assertEqual(result["sample_count"], 2)
+        manifest = read_json(bundle / "manifest.json")
+        self.assertEqual(manifest["sampling"], "all_clips_from_explicit_games")
+        self.assertEqual(manifest["known_development_games_included"], [game.name])
+
+    def test_silver_score_disables_sequence_metric_and_reports_each_game(self):
+        write_json(self.root / "manifest.json", {
+            "games": ["g"], "items": [{"sample_id": "x", "game": "g"}]})
+        write_json(self.root / "annotations.json", {"samples": [
+            {"sample_id": "x", "reviewed": False, "reviewer": "", "events": [event()]}]})
+        result = score_bundle(argparse.Namespace(
+            bundle=self.root, run_root=self.root / "run", annotations=None,
+            allow_draft=False, accept_bard_silver=True, output=None))
+        report = read_json(Path(result["output"]))
+        self.assertIsNone(report["q8_adapted"])
+        self.assertIsNone(report["per_game"]["g"]["q8_adapted"])
+        self.assertEqual(result["claim"], "bard_silver_unordered_evaluation")
 
     def test_score_tracks_has_missing_target_in_denominator(self):
         write_json(self.root / "prediction.json", {"player_predictions": [

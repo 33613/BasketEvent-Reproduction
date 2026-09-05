@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
 import shutil
 import subprocess
@@ -82,7 +83,12 @@ def build_bundle(args):
     if output.exists():
         raise ValueError("输出目录已存在；请换新名称，避免覆盖人工标注或冻结清单。")
     rng = random.Random(args.seed)
-    games = [g for g in discover_games(root, args.games) if g != KNOWN_DEVELOPMENT_GAME]
+    all_clips = getattr(args, "all_clips", False)
+    games = discover_games(root, args.games)
+    if all_clips and not args.games:
+        raise ValueError("--all-clips 必须显式给出 --games，避免意外打包全部 BARD。")
+    if not args.games:
+        games = [g for g in games if g != KNOWN_DEVELOPMENT_GAME]
     if not games:
         raise ValueError("没有独立候选比赛；已排除反复调试过的 bkn-vs-det 比赛。")
     rng.shuffle(games)
@@ -96,23 +102,32 @@ def build_bundle(args):
                 events, anomalies = draft_events(source)
             except (OSError, ValueError, TypeError, AttributeError) as error:
                 source_errors.append({"game": game, "clip": video.stem, "error": str(error)})
-                continue
+                if not all_clips:
+                    continue
+                source = {"video": video.name, "actions": [], "source_error": str(error)}
+                events = []
+                anomalies = [{"code": "INVALID_OR_MISSING_ACTION_SOURCE", "severity": "error",
+                              "message": str(error), "context": {"game": game, "clip": video.stem}}]
             candidates.append({"game": game, "clip": video.stem, "source": source,
                                "video": video, "events": events, "anomalies": anomalies})
-    # 少样本类别优先；一个片段可以同时支持进球与助攻，不复制视频充数。
-    rng.shuffle(candidates)
-    available = Counter(event["event"] for c in candidates for event in c["events"])
-    selected, selected_keys = [], set()
-    for label in sorted(EVENTS, key=lambda name: (available[name], name)):
-        supporting = sum(any(e["event"] == label for e in c["events"]) for c in selected)
-        for item in candidates:
-            if supporting >= args.per_class:
-                break
-            key = (item["game"], item["clip"])
-            if key not in selected_keys and any(e["event"] == label for e in item["events"]):
-                selected.append(item)
-                selected_keys.add(key)
-                supporting += 1
+    if all_clips:
+        # 整场模式保留无可映射动作的片段，不能只留下“有答案”的容易样本。
+        selected = sorted(candidates, key=lambda item: (item["game"], item["clip"]))
+    else:
+        # 少样本类别优先；一个片段可以同时支持进球与助攻，不复制视频充数。
+        rng.shuffle(candidates)
+        available = Counter(event["event"] for c in candidates for event in c["events"])
+        selected, selected_keys = [], set()
+        for label in sorted(EVENTS, key=lambda name: (available[name], name)):
+            supporting = sum(any(e["event"] == label for e in c["events"]) for c in selected)
+            for item in candidates:
+                if supporting >= args.per_class:
+                    break
+                key = (item["game"], item["clip"])
+                if key not in selected_keys and any(e["event"] == label for e in item["events"]):
+                    selected.append(item)
+                    selected_keys.add(key)
+                    supporting += 1
     if not selected:
         raise ValueError("候选池没有可映射事件；检查数据路径和 BARD 动作格式。")
     items, annotations = [], []
@@ -134,11 +149,19 @@ def build_bundle(args):
                             "review_note": "核验全部可见事件、颜色号码、先后顺序；时间可暂缺。"})
     coverage = {name: sum(name in item["strata"] for item in items) for name in EVENTS}
     manifest = {"schema_version": "basketevent_bard_evaluation.v1", "seed": args.seed,
-                "purpose": "independent_product_pilot_not_official_benchmark",
+                "purpose": ("complete_games_product_evaluation" if all_clips
+                            else "independent_product_pilot_not_official_benchmark"),
                 "author_checkpoint_training_overlap": "unknown",
-                "excluded_development_games": [KNOWN_DEVELOPMENT_GAME], "games": games,
-                "per_class_requested": args.per_class, "class_clip_coverage": coverage,
-                "sampling": "game_subset_then_event_stratified_not_natural_frequency",
+                "known_development_games_included": [
+                    game for game in games if game == KNOWN_DEVELOPMENT_GAME
+                ],
+                "excluded_development_games": ([] if KNOWN_DEVELOPMENT_GAME in games
+                                               else [KNOWN_DEVELOPMENT_GAME]),
+                "games": games,
+                "per_class_requested": None if all_clips else args.per_class,
+                "class_clip_coverage": coverage,
+                "sampling": ("all_clips_from_explicit_games" if all_clips
+                             else "game_subset_then_event_stratified_not_natural_frequency"),
                 "unmapped_candidate_count": sum(not c["events"] for c in candidates),
                 "source_errors": source_errors, "items": items,
                 "total_bytes": sum(item["size_bytes"] for item in items)}
@@ -150,8 +173,10 @@ def build_bundle(args):
             "class_clip_coverage": coverage, "copied_videos": args.copy_videos}
 
 
-def materialize_bundle(bundle):
-    """本机按冻结清单复制媒体；不重新抽样、不覆盖内容不同的文件。"""
+def materialize_bundle(bundle, method="copy"):
+    """按冻结清单复制或硬链接媒体；不重新抽样、不覆盖不同内容。"""
+    if method not in {"copy", "hardlink"}:
+        raise ValueError(f"未知素材落盘方式：{method}")
     manifest = read_json(bundle / "manifest.json")
     for item in manifest["items"]:
         target = inside(bundle, item["video"])
@@ -163,8 +188,16 @@ def materialize_bundle(bundle):
         if sha256(source) != item["sha256"]:
             raise ValueError(f"源视频发生变化：{source}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    return {"copied_or_verified": len(manifest["items"])}
+        if method == "hardlink":
+            try:
+                os.link(source, target)
+            except OSError as error:
+                raise OSError(
+                    f"无法创建硬链接（源和目标可能不在同一文件系统）：{source} -> {target}"
+                ) from error
+        else:
+            shutil.copy2(source, target)
+    return {"copied_linked_or_verified": len(manifest["items"]), "method": method}
 
 
 def verify_bundle(bundle):
@@ -294,12 +327,18 @@ def score_bundle(args):
     """全清单评分：未运行/失败样本算空预测，身份失败事件仍计入预测分母。"""
     manifest = read_json(args.bundle / "manifest.json")
     annotations_path = args.annotations or args.bundle / "annotations.json"
-    truth = validate_annotations(manifest, read_json(annotations_path), args.allow_draft)
+    silver = getattr(args, "accept_bard_silver", False)
+    if silver and args.allow_draft:
+        raise ValueError("--accept-bard-silver 与 --allow-draft 不能同时使用。")
+    truth = validate_annotations(
+        manifest, read_json(annotations_path), args.allow_draft or silver
+    )
     report_path = args.run_root / "run_report.json"
     report = read_json(report_path) if report_path.exists() else {"results": {}}
     if report.get("manifest_sha256") not in (None, sha256(args.bundle / "manifest.json")):
         raise ValueError("运行清单和评分清单不一致。")
     samples, failures, statuses, identity_counts = [], [], Counter(), Counter()
+    samples_by_game = {game: [] for game in manifest.get("games", [])}
     for item in manifest["items"]:
         key = item["sample_id"]
         row = report["results"].get(key, {})
@@ -312,26 +351,44 @@ def score_bundle(args):
         except (OSError, ValueError, KeyError, TypeError) as error:
             failures.append({"sample_id": key, "error": str(error)})
         identity_counts.update(p["identity_status"] for p in predictions)
-        samples.append({"sample_id": key, "references": truth[key]["events"], "predictions": predictions})
+        normalized = {"sample_id": key, "references": truth[key]["events"],
+                      "predictions": predictions}
+        samples.append(normalized)
+        samples_by_game.setdefault(item.get("game", "unknown"), []).append(normalized)
+    per_game = {
+        game: {"sample_count": len(rows),
+               "q8_adapted": None if silver else sequence_metrics(rows),
+               "unordered_player_event_sets": player_pair_metrics(rows)}
+        for game, rows in samples_by_game.items()
+    }
     result = {"schema_version": "basketevent_bard_scores.v1",
-              "claim": "draft_only_not_valid_evaluation" if args.allow_draft else "custom_bard_product_evaluation",
-              "protocol": "Q8 LCS formulas; color-number instead of official team-number; custom BARD clips",
+              "claim": ("bard_silver_unordered_evaluation" if silver else
+                        "draft_only_not_valid_evaluation" if args.allow_draft else
+                        "custom_bard_product_evaluation"),
+              "protocol": ("BARD silver unordered player-event sets; no sequence claim" if silver else
+                           "Q8 LCS formulas; color-number instead of official team-number; custom BARD clips"),
               "official_benchmark_reproduction": False,
               "manifest_sha256": sha256(args.bundle / "manifest.json"),
               "annotations_sha256": sha256(annotations_path),
               "sample_count": len(samples), "run_statuses": dict(statuses),
               "identity_statuses": dict(identity_counts), "failed_or_missing": failures,
-              "q8_adapted": sequence_metrics(samples),
+              "q8_adapted": (None if silver else sequence_metrics(samples)),
               "unordered_player_event_sets": player_pair_metrics(samples),
+              "per_game": per_game,
               "normalized_samples": samples,
               "temporal_evaluation": "not_computed: product editing ranges are not paper gate targets"}
-    output = args.output or args.run_root / ("scores_draft.json" if args.allow_draft else "scores.json")
+    default_name = ("scores_silver.json" if silver else
+                    "scores_draft.json" if args.allow_draft else "scores.json")
+    output = args.output or args.run_root / default_name
     write_json(output, result)
-    return {"output": str(output), **{key: result[key] for key in
+    summary = {"output": str(output), **{key: result[key] for key in
             ("claim", "sample_count", "run_statuses", "identity_statuses")},
-            "event_type": result["q8_adapted"]["event_type"],
-            "full_event": result["q8_adapted"]["full_event"],
-            "participant_accuracy": result["q8_adapted"]["participant_accuracy"]}
+            "unordered_player_event_sets": result["unordered_player_event_sets"]}
+    if result["q8_adapted"] is not None:
+        summary.update(event_type=result["q8_adapted"]["event_type"],
+                       full_event=result["q8_adapted"]["full_event"],
+                       participant_accuracy=result["q8_adapted"]["participant_accuracy"])
+    return summary
 
 
 def score_tracks(args):
@@ -406,8 +463,14 @@ def main(argv=None):
     build.add_argument("--per-class", type=positive_integer, default=3)
     build.add_argument("--seed", type=int, default=20260905)
     build.add_argument("--copy-videos", action="store_true")
-    for name in ("copy", "verify"):
-        commands.add_parser(name).add_argument("--bundle", type=Path, required=True)
+    build.add_argument(
+        "--all-clips", action="store_true",
+        help="保留显式指定比赛的全部片段，包括没有映射事件的片段。",
+    )
+    copy_command = commands.add_parser("copy")
+    copy_command.add_argument("--bundle", type=Path, required=True)
+    copy_command.add_argument("--method", choices=("copy", "hardlink"), default="copy")
+    commands.add_parser("verify").add_argument("--bundle", type=Path, required=True)
     run = commands.add_parser("run")
     run.add_argument("--bundle", type=Path, required=True)
     run.add_argument("--run-root", type=Path, required=True)
@@ -436,12 +499,17 @@ def main(argv=None):
     score.add_argument("--annotations", type=Path)
     score.add_argument("--output", type=Path)
     score.add_argument("--allow-draft", action="store_true")
+    score.add_argument(
+        "--accept-bard-silver", action="store_true",
+        help="用未人工核验的 BARD 映射做无序集合评估；不计算 Q8 顺序指标。",
+    )
     tracks = commands.add_parser("score-tracks")
     tracks.add_argument("--targets", type=Path, required=True)
     tracks.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     handlers = {"build": build_bundle, "run": run_bundle, "score": score_bundle,
-                "score-tracks": score_tracks, "copy": lambda a: materialize_bundle(a.bundle),
+                "score-tracks": score_tracks,
+                "copy": lambda a: materialize_bundle(a.bundle, a.method),
                 "verify": lambda a: verify_bundle(a.bundle)}
     print(json.dumps(handlers[args.command](args), ensure_ascii=False, indent=2))
 

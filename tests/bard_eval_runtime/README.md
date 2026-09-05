@@ -227,3 +227,88 @@ python -m src.application.evaluate_bard score-tracks \
 - 工程失败率高：先消除运行失败，否则模型比较会混入资源和环境因素。
 
 先导集用于排查协议和选择方向。方向选定后，在未参与调参的新比赛上冻结正式测试集，报告样本量、逐类支持数和比赛级置信区间；小样本暂不下“达到 90%”结论。
+
+## 两场完整比赛实验
+
+先导集只验证协议。当前完整实验固定为：
+
+- `bkn-vs-det-0022400861`：246 条，已经用于多轮问题定位，只作为回归场，不能冒充未见测试集。
+- `okc-vs-mia-0022400375`：232 条，约 1.43 GiB，未参与已有调试，作为主要留出场。
+
+两场共 478 条、约 2990.1 MiB。BARD 草稿的片段覆盖为：Missed Shot 167、Made Shot 140、Free Throw 96、Foul 86、Turnover 62、Rebound 152、steal 31、block 24、ast 92、Jump Ball 0。一个片段可覆盖多类，以上数字不能相加当作视频数，也尚不是人工核验后的事件实例数。
+
+本地 60 场 BARD 的结构化动作均没有映射出 Jump Ball，因此本实验对该类没有评估能力，指标报告会同时给固定十类 Macro-F1 与仅 GT 支持类别的 Macro-F1。
+
+先把新增比赛上传到服务器数据区。Windows PowerShell：
+
+```powershell
+$Game = "okc-vs-mia-0022400375"
+$DataRoot = "D:\数据集\basket"
+$Archive = "$DataRoot\$Game.tar"
+$Server = "fangzilin@10.195.234.58"
+$RemoteDataRoot = "/home/fangzilin/data/basket"
+
+tar -cf $Archive -C $DataRoot $Game
+Get-FileHash -Algorithm SHA256 $Archive
+ssh $Server "mkdir -p $RemoteDataRoot"
+scp $Archive "${Server}:${RemoteDataRoot}/"
+```
+
+服务器先比较 `sha256sum /home/fangzilin/data/basket/okc-vs-mia-0022400375.tar` 与 PowerShell 输出，再解包：
+
+```bash
+tar -xf /home/fangzilin/data/basket/okc-vs-mia-0022400375.tar \
+  -C /home/fangzilin/data/basket
+
+find /home/fangzilin/data/basket/okc-vs-mia-0022400375/video \
+  -maxdepth 1 -type f -name '*.mp4' | wc -l
+```
+
+预期为 232。确认无误后再决定是否保留传输归档；不要在校验前删除。
+
+在服务器从两场原始数据构建冻结测试包。`--all-clips` 必须搭配显式 `--games`，防止误打包全部 60 场：
+
+```bash
+cd /home/fangzilin/project/BasketEvent
+
+python -m src.application.evaluate_bard build \
+  --data-root /home/fangzilin/data/basket \
+  --output tests/bard_eval_runtime/two_games_full_v1 \
+  --games bkn-vs-det-0022400861 okc-vs-mia-0022400375 \
+  --all-clips
+
+python -m src.application.evaluate_bard copy \
+  --bundle tests/bard_eval_runtime/two_games_full_v1 \
+  --method hardlink
+
+python -m src.application.evaluate_bard verify \
+  --bundle tests/bard_eval_runtime/two_games_full_v1
+```
+
+硬链接复用 `/home/fangzilin/data/basket` 的视频内容，不额外占用约 2.9 GiB；若两目录不在同一文件系统，命令会明确失败，此时改用 `--method copy` 并先确认磁盘空间。
+
+当前单条双 GPU 试运行成功后，再启动 478 条完整实验：
+
+```bash
+nohup python -u -m src.application.evaluate_bard run \
+  --bundle tests/bard_eval_runtime/two_games_full_v1 \
+  --run-root tests/bard_eval_runtime/run_two_games_full_v1 \
+  --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg \
+  --sam3-gpus 0,1 --playnet-gpu 0 --identity-gpus 0 \
+  > tests/bard_eval_runtime/two_games_full_v1.log 2>&1 &
+
+echo $! > tests/bard_eval_runtime/two_games_full_v1.pid
+```
+
+先用一条成功任务的实际耗时估算 478 条总时长；不要未经估算就让共享 GPU 连续运行数天。运行报告和最终得分按两场分别输出，同时给总体结果。
+
+对全部 478 条，可先使用 BARD 结构化动作进行 **silver label** 无序人物—事件集合评估：
+
+```bash
+python -m src.application.evaluate_bard score \
+  --bundle tests/bard_eval_runtime/two_games_full_v1 \
+  --run-root tests/bard_eval_runtime/run_two_games_full_v1 \
+  --accept-bard-silver
+```
+
+该模式输出 `scores_silver.json`，明确不计算 Q8 顺序 LCS：BARD 草稿未经过逐片核验，而且自动加入的助攻顺序不能当作严格视频事件顺序。要报告 Q8 Event-type/Full-event F1，仍需人工核验对应样本。推荐从新比赛再冻结分层人工 gold 子集，而不是人工标完 478 条后才发现协议问题。

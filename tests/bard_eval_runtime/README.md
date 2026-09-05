@@ -140,7 +140,8 @@ source /home/fangzilin/tools/miniconda3/etc/profile.d/conda.sh
 conda activate /home/fangzilin/envs/basketevent
 export PYTHONNOUSERSITE=1
 export TOKENIZERS_PARALLELISM=false
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0,1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 python -m unittest tests.test_evaluation tests.test_inference_timeline -v
 python -m src.application.evaluate_bard verify --bundle tests/bard_eval_runtime/pilot_v1
 
@@ -148,10 +149,10 @@ python -u -m src.application.evaluate_bard run \
   --bundle tests/bard_eval_runtime/pilot_v1 \
   --run-root tests/bard_eval_runtime/run_pilot_v1 \
   --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg \
-  --gpu 0 --limit 1
+  --sam3-gpus 0,1 --playnet-gpu 0 --identity-gpus 0 --limit 1
 ```
 
-此时逻辑 GPU 0 是物理 GPU 1。只在确认该卡可用时运行。主入口自动读取每个输入视频的 FPS，并显式传给 PlayNet，避免把 30 FPS 视频当成 60 FPS。
+此命令要求两张物理卡都空闲：SAM3 用逻辑 `0,1` 分担轨迹，PlayNet 和 Qwen 身份阶段依次使用逻辑 GPU 0；各阶段并非同时常驻。若只开放物理 GPU1，可改回 `CUDA_VISIBLE_DEVICES=1` 和兼容参数 `--gpu 0`。主入口自动读取每个输入视频的 FPS，并显式传给 PlayNet，避免把 30 FPS 视频当成 60 FPS。
 当前接口只接受整数帧率；遇到 29.97 等输入会报错，需单独准备并记录 CFR 版本，不能悄悄改写原测试数据。
 
 先看第一条 `pipeline.log`、`job_state.json` 和实际导出素材；确认工程链路没问题，再去掉 `--limit 1`：
@@ -161,7 +162,8 @@ nohup python -u -m src.application.evaluate_bard run \
   --bundle tests/bard_eval_runtime/pilot_v1 \
   --run-root tests/bard_eval_runtime/run_pilot_v1 \
   --ffmpeg-binary /home/fangzilin/tools/ffmpeg-full/bin/ffmpeg \
-  --gpu 0 > tests/bard_eval_runtime/pilot_v1.log 2>&1 &
+  --sam3-gpus 0,1 --playnet-gpu 0 --identity-gpus 0 \
+  > tests/bard_eval_runtime/pilot_v1.log 2>&1 &
 echo $! > tests/bard_eval_runtime/pilot_v1.pid
 ```
 

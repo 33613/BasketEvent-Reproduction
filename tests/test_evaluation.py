@@ -167,10 +167,15 @@ class BundleTest(unittest.TestCase):
         with patch.dict("sys.modules", {"cv2": cv2}), \
                 patch("src.core.config.SETTINGS", settings), \
                 patch("src.application.evaluate_bard.subprocess.run", side_effect=execute):
-            result = run_bundle(argparse.Namespace(bundle=self.root, run_root=self.root / "run",
-                                 pipeline_mode="product", limit=1, gpu="0", ffmpeg_binary="ffmpeg"))
+            result = run_bundle(argparse.Namespace(
+                bundle=self.root, run_root=self.root / "run", pipeline_mode="product",
+                limit=1, gpu=None, sam3_gpus="0,1", playnet_gpu=1,
+                identity_gpus="1", ffmpeg_binary="ffmpeg"))
         self.assertEqual(result["results"]["x"]["status"], "completed")
         self.assertEqual(commands[0][commands[0].index("--fps-in") + 1], "30")
+        self.assertEqual(commands[0][commands[0].index("--sam3-gpus") + 1], "0,1")
+        self.assertEqual(commands[0][commands[0].index("--playnet-gpu") + 1], "1")
+        self.assertEqual(commands[0][commands[0].index("--identity-gpus") + 1], "1")
         self.assertNotIn("annotations.json", " ".join(commands[0]))
         self.assertNotIn("--roster-json", commands[0])
 

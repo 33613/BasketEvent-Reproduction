@@ -181,6 +181,10 @@ def run_bundle(args):
     import cv2
 
     bundle, run_root = args.bundle.resolve(), args.run_root.resolve()
+    fallback_gpu = args.gpu or "0"
+    sam3_gpus = args.sam3_gpus or fallback_gpu
+    playnet_gpu = args.playnet_gpu if args.playnet_gpu is not None else int(fallback_gpu)
+    identity_gpus = args.identity_gpus or fallback_gpu
     manifest = read_json(bundle / "manifest.json")
     manifest_hash = sha256(bundle / "manifest.json")
     run_root.mkdir(parents=True, exist_ok=True)
@@ -221,8 +225,9 @@ def run_bundle(args):
                    "--runtime-root", str(sample_root), "--ffmpeg-binary", args.ffmpeg_binary,
                    "--window-seconds", str(config["window_seconds"]),
                    "--overlap-seconds", "2" if args.pipeline_mode == "product" else "0",
-                   "--sam3-gpus", args.gpu, "--playnet-gpu", args.gpu,
-                   "--fps-in", str(round(fps)), "--with-identity", "--identity-gpus", args.gpu,
+                   "--sam3-gpus", sam3_gpus, "--playnet-gpu", str(playnet_gpu),
+                   "--fps-in", str(round(fps)), "--with-identity",
+                   "--identity-gpus", identity_gpus,
                    "--identity-num-crops", "10"]
         print(f"[{index}/{len(items)}] {sample_id} fps={fps}", flush=True)
         row = {"status": "running", "command": command, "fps": fps}
@@ -406,7 +411,22 @@ def main(argv=None):
     run = commands.add_parser("run")
     run.add_argument("--bundle", type=Path, required=True)
     run.add_argument("--run-root", type=Path, required=True)
-    run.add_argument("--gpu", choices=[str(i) for i in range(16)], default="0")
+    run.add_argument(
+        "--gpu", choices=[str(i) for i in range(16)], default=None,
+        help="兼容旧命令：未分别指定设备时，三个阶段共同使用这张逻辑 GPU。",
+    )
+    run.add_argument(
+        "--sam3-gpus", default=None,
+        help="SAM3 使用的逻辑 GPU 列表，例如 0,1。",
+    )
+    run.add_argument(
+        "--playnet-gpu", type=int, choices=range(16), default=None,
+        help="PlayNet 使用的单张逻辑 GPU。",
+    )
+    run.add_argument(
+        "--identity-gpus", default=None,
+        help="Qwen 身份阶段使用的逻辑 GPU 列表。",
+    )
     run.add_argument("--ffmpeg-binary", default="ffmpeg")
     run.add_argument("--limit", type=positive_integer)
     run.add_argument("--pipeline-mode", choices=("product", "clip"), default="product")
